@@ -1,0 +1,33 @@
+{
+  "dry_run": true,
+  "stake_currency": "USDT",
+  "stake_amount": 10.0,
+  "max_open_trades": 3,
+  "timeframe": "1m",
+  "pair_whitelist": [
+    "BTC/USDT",
+    "ETH/USDT"
+  ],
+  "minimal_roi": {
+    "0": 0.04
+  },
+  "stoploss": -0.1,
+  "unfilledtimeout": {
+    "entry": 10,
+    "exit": 10,
+    "unit": "minutes"
+  },
+  "entry_pricing": {
+    "price_side": "same",
+    "price_last_balance": 0.0,
+    "use_order_book": false,
+    "order_book_top": 1
+  },
+  "exit_pricing": {
+    "price_side": "same",
+    "price_last_balance": 0.0,
+    "use_order_book": false,
+    "order_book_top": 1
+  },
+  "strategy": "MainStrategy"
+}

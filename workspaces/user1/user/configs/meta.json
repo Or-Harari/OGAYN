@@ -1,0 +1,1 @@
+{"strategy_paths": ["./strategies"], "decision_log": {"enable": true, "path": null}, "regime": {"enable": true, "tf": "1h", "ema_len": 200, "adx_thresh": 20}, "strategies": {}, "dca": {"enable": true, "total_budget": 2000.0, "mode": "martingale", "thresholds": [3.0, 6.0, 10.0], "max_adds": 3}}

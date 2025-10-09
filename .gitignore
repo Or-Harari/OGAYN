@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg-info/
+.eggs/
+
+# Virtual envs
+.venv/
+.env/
+
+# VS Code
+.vscode/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs and temp
+*.log
+logs/
+**/logs/
+
+# SQLite and data artifacts
+**/*.sqlite
+**/*.sqlite-shm
+**/*.sqlite-wal
+workspaces/**/user_data/data/
+workspaces/**/user_data/backtest_results/
+workspaces/**/user_data/hyperopt_results/
+workspaces/**/user_data/hyperopts/
+workspaces/**/user_data/freqaimodels/
+workspaces/**/user_data/logs/
+workspaces/**/user_data/trading_core_debug.log
+
+# Build
+build/
+dist/
+
+# Env files / secrets
+*.env
+.env.*
+
+# Node
+node_modules/
+
+# Bytecode caches in backend
+backend/**/__pycache__/
+
+# Local config artifacts that are generated
+workspaces/**/user_data/configs/config.generated.json
+workspaces/**/user_data/configs/config.generated.sources.json
+
+# IDE
+.idea/
