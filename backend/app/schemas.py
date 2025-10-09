@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Union, Literal
 from pydantic import BaseModel, EmailStr
 
 
@@ -82,3 +82,65 @@ class BotModeUpdate(BaseModel):
 
 class BotStrategyUpdate(BaseModel):
     active_strategy: ActiveStrategySpec
+
+
+# ---- Structured config models ----
+class ExchangeConfig(BaseModel):
+    name: str
+    key: str | None = None
+    secret: str | None = None
+    password: str | None = None
+    uid: str | None = None
+    sandbox: bool | None = None
+    ccxt_config: Dict[str, Any] | None = None
+    ccxt_sync_config: Dict[str, Any] | None = None
+    ccxt_async_config: Dict[str, Any] | None = None
+    enable_ws: bool | None = None
+    markets_refresh_interval: int | None = None
+    skip_open_order_update: bool | None = None
+    unknown_fee_rate: float | None = None
+    log_responses: bool | None = None
+    only_from_ccxt: bool | None = None
+    pair_blacklist: list[str] | None = None
+
+
+class PricingDepthConfig(BaseModel):
+    enabled: bool | None = None
+    bids_to_ask_delta: float | None = None
+
+
+class PricingConfig(BaseModel):
+    price_side: Literal['ask', 'bid', 'same', 'other'] = 'same'
+    price_last_balance: float = 0.0
+    use_order_book: bool = False
+    order_book_top: int = 1
+    check_depth_of_market: PricingDepthConfig | None = None
+
+
+class BotTradingControls(BaseModel):
+    stake_currency: str
+    stake_amount: Union[float, str]
+    max_open_trades: int
+    tradable_balance_ratio: float | None = None
+    available_capital: float | None = None
+    amend_last_stake_amount: bool | None = None
+    last_stake_amount_min_ratio: float | None = None
+    amount_reserve_percent: float | None = None
+    fiat_display_currency: str | None = None
+    dry_run_wallet: Union[float, Dict[str, float], None] = None
+    fee: float | None = None
+    futures_funding_rate: float | None = None
+    trading_mode: Literal['spot', 'futures'] = 'spot'
+    margin_mode: str | None = None
+    liquidation_buffer: float | None = None
+    cancel_open_orders_on_exit: bool | None = None
+    custom_price_max_distance_ratio: float | None = None
+
+
+class BotPricingUpdate(BaseModel):
+    entry_pricing: PricingConfig
+    exit_pricing: PricingConfig
+
+
+class BotTradingModeUpdate(BaseModel):
+    trading_mode: Literal['spot', 'futures']

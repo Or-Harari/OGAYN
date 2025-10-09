@@ -245,7 +245,7 @@ def _load_json_if(path: Path) -> Dict[str, Any]:
 
 SYSTEM_DEFAULTS: Dict[str, Any] = {
     "dry_run": True,
-    "timeframe": "1m",
+    "trading_mode": "spot",
     "stake_currency": "USDT",
     "entry_pricing": {"price_side": "ask", "use_order_book": False, "order_book_top": 1, "price_last_balance": 0.0},
     "exit_pricing": {"price_side": "bid", "use_order_book": False, "order_book_top": 1, "price_last_balance": 0.0},
@@ -326,6 +326,37 @@ def _finalize_and_write_cfg(cfg: Dict[str, Any], meta: Dict[str, Any], out_path:
     cfg.setdefault("strategy", "MainStrategy")
     # Ensure initial_state default if still missing after layering
     cfg.setdefault("initial_state", SYSTEM_DEFAULTS.get("initial_state", "running"))
+    # Remove any parameters that must live in the strategy (not config)
+    strategy_owned = [
+        "minimal_roi",
+        "timeframe",
+        "stoploss",
+        "trailing_stop",
+        "trailing_stop_positive",
+        "trailing_stop_positive_offset",
+        "trailing_only_offset_is_reached",
+        "use_custom_stoploss",
+        "process_only_new_candles",
+        "order_types",
+        "order_time_in_force",
+        "unfilledtimeout",
+        "disable_dataframe_checks",
+        "use_exit_signal",
+        "exit_profit_only",
+        "exit_profit_offset",
+        "ignore_roi_if_entry_signal",
+        "ignore_buying_expired_candle_after",
+        "position_adjustment_enable",
+        "max_entry_position_adjustment",
+    ]
+    for k in strategy_owned:
+        if k in cfg:
+            cfg.pop(k, None)
+    # Spot/Futures mode filtering
+    tmode = (cfg.get("trading_mode") or "spot").lower()
+    if tmode == "spot":
+        for k in ("liquidation_buffer", "margin_mode"):
+            cfg.pop(k, None)
     # Merge pricing defaults without overwriting existing keys
     for block in ("entry_pricing", "exit_pricing"):
         defaults = SYSTEM_DEFAULTS[block]

@@ -6,20 +6,18 @@ User-level (account) required keys (empty allowed but must exist for structural 
     exchange.name, exchange.key, exchange.secret
     (API credentials may remain empty while in dry_run)
 
-Bot-level required keys (must be present; some may allow empty placeholder until start validation):
+Bot-level required keys (must be present; excludes all items listed under "Parameters in the strategy"):
     pair_whitelist (non-empty list at start)
     stake_currency
     stake_amount (positive float or "unlimited")
     max_open_trades (int or -1)
-    minimal_roi (non-empty dict)
-    stoploss (float)
     dry_run (bool)
-    timeframe
-    unfilledtimeout.entry / unfilledtimeout.exit (ints) + unit optional
     entry_pricing.price_last_balance (float)
     entry_pricing.price_side
     exit_pricing.price_side
-    strategy (class name; placeholder ok)
+    (Optional but supported in bot config: tradable_balance_ratio, available_capital, amend_last_stake_amount,
+     last_stake_amount_min_ratio, amount_reserve_percent, fiat_display_currency, dry_run_wallet, fee,
+     futures_funding_rate, trading_mode, margin_mode, liquidation_buffer, cancel_open_orders_on_exit, custom_price_max_distance_ratio)
 
 We treat empty strings or empty lists as "unconfigured" and raise at validation time
 when starting a bot. CRUD endpoints may allow them to stay empty until launch.
@@ -36,13 +34,7 @@ BOT_REQUIRED = [
     ("pair_whitelist",),
     ("stake_currency",),
     ("stake_amount",),
-    ("max_open_trades",),
-    ("timeframe",),
-    ("minimal_roi",),
-    ("stoploss",),
     ("dry_run",),
-    ("unfilledtimeout", "entry"),
-    ("unfilledtimeout", "exit"),
     ("entry_pricing", "price_last_balance"),
     ("entry_pricing", "price_side"),
     ("exit_pricing", "price_side"),
@@ -65,11 +57,8 @@ BOT_PLACEHOLDER = {
     "stake_currency": "USDT",
     "stake_amount": 10.0,
     "max_open_trades": 3,
-    "timeframe": "1m",
     "pair_whitelist": ["BTC/USDT", "ETH/USDT"],
-    "minimal_roi": {"0": 0.04},
-    "stoploss": -0.1,
-    "unfilledtimeout": {"entry": 10, "exit": 10, "unit": "minutes"},
+    "trading_mode": "spot",
     "entry_pricing": {"price_side": "same", "price_last_balance": 0.0, "use_order_book": False, "order_book_top": 1},
     "exit_pricing": {"price_side": "same", "price_last_balance": 0.0, "use_order_book": False, "order_book_top": 1},
     "strategy": "MainStrategy",
@@ -129,24 +118,12 @@ def validate_bot_config(cfg: Dict[str, Any]) -> List[str]:
         if key == 'pair_whitelist':
             if not isinstance(val, list) or not val:
                 errors.append("pair_whitelist must be a non-empty list")
-        elif key == 'minimal_roi':
-            if not isinstance(val, dict) or not val:
-                errors.append("minimal_roi must be a non-empty dict")
         elif key in {'stake_amount'}:
             if not (isinstance(val, (int, float)) or (isinstance(val, str) and val == 'unlimited')):
                 errors.append("stake_amount must be number or 'unlimited'")
-        elif key == 'max_open_trades':
-            if not isinstance(val, int):
-                errors.append("max_open_trades must be integer")
-        elif key == 'stoploss':
-            if not isinstance(val, (int, float)):
-                errors.append("stoploss must be float ratio")
         elif key == 'dry_run':
             if not isinstance(val, bool):
                 errors.append("dry_run must be boolean")
-        elif key.startswith('unfilledtimeout'):
-            # entry / exit validated individually above; skip
-            pass
         elif key == 'entry_pricing.price_last_balance':
             if not isinstance(val, (int, float)):
                 errors.append("entry_pricing.price_last_balance must be float")
@@ -168,6 +145,23 @@ def validate_bot_config_for_mode(bot_cfg: Dict[str, Any], account_cfg: Dict[str,
     """
     mode = (mode or '').lower()
     errs: List[str] = []
+    # trading_mode specific checks (spot/futures)
+    tmode = (bot_cfg or {}).get('trading_mode', 'spot')
+    if tmode not in {'spot', 'futures'}:
+        errs.append("trading_mode must be 'spot' or 'futures'")
+    if tmode == 'spot':
+        # Disallow futures-only keys when in spot mode
+        if 'liquidation_buffer' in bot_cfg:
+            errs.append("spot mode: liquidation_buffer is not applicable")
+        if 'margin_mode' in bot_cfg:
+            errs.append("spot mode: margin_mode is not applicable")
+    elif tmode == 'futures':
+        # Optionally validate known futures keys types when present
+        if 'liquidation_buffer' in bot_cfg and not isinstance(bot_cfg.get('liquidation_buffer'), (int, float)):
+            errs.append("futures mode: liquidation_buffer must be float")
+        # margin_mode is exchange-specific, keep as string if provided
+        if 'margin_mode' in bot_cfg and not isinstance(bot_cfg.get('margin_mode'), str):
+            errs.append("futures mode: margin_mode must be string")
     if mode == 'live':
         exch = (account_cfg or {}).get('exchange', {}) if isinstance(account_cfg, dict) else {}
         if not exch.get('key'):

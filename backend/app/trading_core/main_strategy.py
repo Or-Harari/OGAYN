@@ -55,6 +55,7 @@ class MainStrategy(CoreBaseStrategy):
     ignore_roi_if_entry_signal = False
     minimal_roi = {"0": 1.0}
     stoploss = -0.50
+    max_open_trades = 3
     trailing_stop = False
     use_custom_stoploss = False
 
