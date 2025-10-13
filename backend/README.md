@@ -7,4 +7,4 @@ This is a standalone FastAPI service for managing users, their workspaces, and b
 
 See `user_data/backend/README.md` for run instructions (identical here). Set `FT_BACKEND_DB` and `FT_JWT_SECRET` as needed.
 
-Migration note: Strategy orchestration now lives in `backend/app/trading_core`. A per-workspace shim `user_data/strategies/MainStrategy.py` imports the core `MainStrategy`. For details and manual upgrade steps for older workspaces, read `MIGRATION.md`.
+Strategies should be defined per-bot (Freqtrade best practice). Each bot selects a concrete strategy class via its config (e.g., `"strategy": "MomentumPullbackStrategy"`). There is no shared global orchestrator. If you need regime/decision logic, implement it inside your bot's strategy class.

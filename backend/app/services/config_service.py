@@ -4,6 +4,8 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+import socket
+import secrets
 
 
 def _resolve_config_path(workspace_root: str) -> Path:
@@ -316,21 +318,128 @@ def compose_bot_config(user_workspace_root: str, bot_user_data_root: str, mode: 
         for k, v in active_strategy.items():
             if v is not None:
                 meta.setdefault("active_strategy", {})[k] = v
-    # 6. finalize & write
+        # If a concrete class name is provided, propagate to runtime config 'strategy'
+        clazz = active_strategy.get("clazz") if isinstance(active_strategy, dict) else None
+        if isinstance(clazz, str) and clazz:
+            # Be tolerant if a filename was provided; strip .py suffix
+            if clazz.lower().endswith(".py"):
+                clazz = clazz[:-3]
+            if clazz:
+                cfg["strategy"] = clazz
+    # 6. strategy_path resolution (so Freqtrade can find strategies outside user_data/strategies)
+    strategy_paths: List[str] = []
+    # default bot-local strategies directory
+    bot_strategies = bot_root / "strategies"
+    strategy_paths.append(str(bot_strategies))
+    # common user workspace strategies directory (workspaces/<user>/user/strategies)
+    user_strategies = user_root / "user" / "strategies"
+    if user_strategies.exists():
+        strategy_paths.append(str(user_strategies))
+    # meta-declared strategy paths (resolve relative to user_root)
+    for sp in meta.get("strategy_paths", []) or []:
+        try:
+            p = Path(sp)
+            if not p.is_absolute():
+                p = (user_root / sp).resolve()
+            strategy_paths.append(str(p))
+        except Exception:
+            continue
+    # de-duplicate while preserving order
+    seen: set[str] = set()
+    dedup_paths = [x for x in strategy_paths if not (x in seen or seen.add(x))]
+    # Prefer a path that actually contains the strategy file if strategy name is known
+    chosen_path = None
+    strategy_name = None
+    try:
+        strategy_name = (active_strategy.get("clazz") if isinstance(active_strategy, dict) else None) or cfg.get("strategy")
+    except Exception:
+        strategy_name = cfg.get("strategy")
+    if isinstance(strategy_name, str) and strategy_name:
+        target = f"{strategy_name}.py"
+        for base in dedup_paths:
+            try:
+                basep = Path(base)
+                if basep.exists():
+                    # recursive search
+                    for cand in basep.rglob(target):
+                        chosen_path = str(cand.parent)
+                        break
+                if chosen_path:
+                    break
+            except Exception:
+                continue
+    # Fallback: first existing directory
+    if not chosen_path:
+        for p in dedup_paths:
+            try:
+                if Path(p).exists():
+                    chosen_path = p
+                    break
+            except Exception:
+                continue
+    # Final fallback: first candidate
+    if not chosen_path and dedup_paths:
+        chosen_path = dedup_paths[0]
+    if chosen_path:
+        cfg["strategy_path"] = chosen_path
+
+    # 7. finalize & write
     out_path = bot_configs_dir / "config.generated.json"
     return _finalize_and_write_cfg(cfg, meta, out_path, sources=sources)
 
 
 def _finalize_and_write_cfg(cfg: Dict[str, Any], meta: Dict[str, Any], out_path: Path, sources: List[Tuple[str, Path]]):
     # Ensure strategy
-    cfg.setdefault("strategy", "MainStrategy")
+    # Leave strategy unset by default; bots must specify a concrete strategy class name
+    cfg.setdefault("strategy", cfg.get("strategy", "__SET_YOUR_STRATEGY__"))
     # Ensure initial_state default if still missing after layering
     cfg.setdefault("initial_state", SYSTEM_DEFAULTS.get("initial_state", "running"))
+    # Ensure local API server is enabled for backend proxying (single entrypoint)
+    def _pick_free_port(start: int = 18080, max_tries: int = 500) -> int:
+        p = start
+        for _ in range(max_tries):
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                try:
+                    s.bind(("127.0.0.1", p))
+                    return p
+                except OSError:
+                    p += 1
+        return start
+
+    api = cfg.get("api_server") or {}
+    if not api.get("enabled"):
+        cfg["api_server"] = {
+            "enabled": True,
+            "listen_ip_address": "127.0.0.1",
+            "listen_port": _pick_free_port(),
+            "verbosity": "error",
+            "enable_openapi": False,
+            "jwt_secret_key": secrets.token_hex(24),
+            "CORS_origins": [],
+            "username": "ftproxy",
+            "password": secrets.token_urlsafe(18),
+            "ws_token": secrets.token_urlsafe(24),
+        }
+    else:
+        # Ensure port and host defaults
+        api.setdefault("listen_ip_address", "127.0.0.1")
+        api.setdefault("listen_port", _pick_free_port())
+        api.setdefault("verbosity", "error")
+        api.setdefault("enable_openapi", False)
+        api.setdefault("jwt_secret_key", secrets.token_hex(24))
+        api.setdefault("CORS_origins", [])
+        api.setdefault("username", "ftproxy")
+        api.setdefault("password", secrets.token_urlsafe(18))
+        api.setdefault("ws_token", secrets.token_urlsafe(24))
+        cfg["api_server"] = api
+
     # Remove any parameters that must live in the strategy (not config)
     strategy_owned = [
         "minimal_roi",
         "timeframe",
         "stoploss",
+        "max_open_trades",
         "trailing_stop",
         "trailing_stop_positive",
         "trailing_stop_positive_offset",

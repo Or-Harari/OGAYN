@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from typing import Any, Dict, Optional, Union, Literal
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, field_validator
 
 
 class Token(BaseModel):
@@ -58,6 +58,26 @@ class BotRead(BaseModel):
 
     class Config:
         from_attributes = True
+
+    @field_validator("active_strategy", mode="before")
+    @classmethod
+    def _parse_active_strategy(cls, v):
+        """Accepts DB-stored JSON string or dict and normalizes to dict|None.
+        Ensures API responses always return a dict for active_strategy.
+        """
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return v
+        if isinstance(v, str):
+            try:
+                import json as _json
+                return _json.loads(v)
+            except Exception:
+                # If it's not valid JSON, drop it to avoid response validation errors
+                return None
+        # Any other unexpected type -> None
+        return None
 
 
 class UserConfigPatch(BaseModel):
@@ -144,3 +164,17 @@ class BotPricingUpdate(BaseModel):
 
 class BotTradingModeUpdate(BaseModel):
     trading_mode: Literal['spot', 'futures']
+
+
+class BacktestStartRequest(BaseModel):
+    """Parameters to initiate a backtest run.
+
+    - timerange: Freqtrade timerange, e.g. "20250101-20250131" or "-20250131".
+    - strategy: Optional override of strategy class name (uses composed config by default).
+    - export: Whether to export results. Defaults to 'trades'. Set to 'none' to skip.
+    - export_filename: Optional export filename relative to user_data/backtest_results.
+    """
+    timerange: str | None = None
+    strategy: str | None = None
+    export: Literal['none', 'trades'] = 'trades'
+    export_filename: str | None = None

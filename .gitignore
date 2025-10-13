@@ -27,6 +27,9 @@ logs/
 **/*.sqlite
 **/*.sqlite-shm
 **/*.sqlite-wal
+# Ignore all generated user_data under bots
+workspaces/**/bots/**/user_data/**
+# Legacy paths (keep for safety if structure varies)
 workspaces/**/user_data/data/
 workspaces/**/user_data/backtest_results/
 workspaces/**/user_data/hyperopt_results/
@@ -34,6 +37,9 @@ workspaces/**/user_data/hyperopts/
 workspaces/**/user_data/freqaimodels/
 workspaces/**/user_data/logs/
 workspaces/**/user_data/trading_core_debug.log
+
+# Strategy variants that are examples or local
+workspaces/**/user/strategies/variants/**
 
 # Build
 build/

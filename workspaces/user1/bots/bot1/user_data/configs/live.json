@@ -1,1 +1,1 @@
-{"dry_run": true, "exchange": {"key": "__REQUIRED__", "secret": "__REQUIRED__"}}
+{"dry_run": false, "exchange": {"key": "__REQUIRED__", "secret": "__REQUIRED__"}}

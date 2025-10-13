@@ -49,11 +49,6 @@ def _is_candidate_strategy(obj) -> bool:
     if name in ("BaseStrategy", "IStrategy"):
         return False
 
-    # Our orchestrator contract
-    ours = all(callable(getattr(obj, m, None)) for m in ("entry_mask", "exit_mask"))
-    if ours:
-        return True
-
     # Freqtrade modern methods
     ft_new = all(callable(getattr(obj, m, None)) for m in ("populate_entry_trend", "populate_exit_trend"))
     if ft_new:
@@ -126,43 +121,46 @@ def discover_strategies(workspace_root: str) -> Dict[str, str]:
 
 _TEMPLATE = '''from __future__ import annotations
 
-"""Variant strategy subclassing project MainStrategy.
+"""Strategy scaffold.
 
-Edit only what you need: indicators, entry/exit logic, risk hooks.
+Implement Freqtrade's native methods populate_entry_trend / populate_exit_trend.
+Optionally compute indicators in populate_indicators.
 """
 
 from pandas import DataFrame
-from backend.app.trading_core.main_strategy import MainStrategy as CoreMainStrategy
+from backend.app.trading_core.base_strategy import CoreBaseStrategy
 
 
-class {class_name}(CoreMainStrategy):
+class {class_name}(CoreBaseStrategy):
     name = "{class_name}"
 
-    def populate_indicators(self, dataframe: DataFrame, metadata: dict | None = None):
-        dataframe = super().populate_indicators(dataframe, metadata)
-        # TODO: add custom indicators here
-        return dataframe
+    # Required strategy parameters
+    timeframe = "1m"
+    minimal_roi = {"0": 0.10}
+    stoploss = -0.10
 
-    def populate_entry_trend(self, dataframe: DataFrame, metadata: dict | None = None):
-        dataframe = super().populate_entry_trend(dataframe, metadata)
-        # Example tweak: tag when close above EMA200 (if present)
-        if 'ema200' in dataframe.columns:
-            dataframe.loc[dataframe['close'] > dataframe['ema200'], 'enter_long'] = 1
-            dataframe.loc[dataframe['close'] > dataframe['ema200'], 'enter_tag'] = '{class_name}:ema200'
-        return dataframe
+    def populate_indicators(self, df: DataFrame, metadata: dict | None = None):
+        # TODO: add custom indicators here (assign new columns into df)
+        return df
 
-    def populate_exit_trend(self, dataframe: DataFrame, metadata: dict | None = None):
-        dataframe = super().populate_exit_trend(dataframe, metadata)
-        # Example exit: clear longs if close below ema200
-        if 'ema200' in dataframe.columns:
-            dataframe.loc[dataframe['close'] < dataframe['ema200'], 'exit_long'] = 1
-            dataframe.loc[dataframe['close'] < dataframe['ema200'], 'exit_tag'] = '{class_name}:ema200-cross'
-        return dataframe
+    def populate_entry_trend(self, df: DataFrame, metadata: dict | None = None):
+        # Example:
+        # self.populate_indicators(df, metadata)
+        df['enter_long'] = 0
+        # mask = ... your conditions ...
+        # df.loc[mask, 'enter_long'] = 1
+        return df
+
+    def populate_exit_trend(self, df: DataFrame, metadata: dict | None = None):
+        df['exit_long'] = 0
+        # mask = ... your conditions ...
+        # df.loc[mask, 'exit_long'] = 1
+        return df
 '''
 
 
 def create_strategy_file(class_name: str, filename: str | None, workspace_root: str) -> str:
-    """Create a new variant strategy subclassing MainStrategy.
+    """Create a new strategy file scaffold.
 
     Writes file under strategies/variants/ to distinguish from auto-discovered _strategies legacy dir.
     """

@@ -6,12 +6,12 @@ This document describes the refactor that moved the orchestration / meta strateg
 
 | Before | After |
 |--------|-------|
-| `user_data/strategies/meta_strategy.py` contained a large orchestrator class mixing discovery, indicators, regime logic and DCA | Canonical `MainStrategy` lives in `backend/app/trading_core/main_strategy.py` |
+| `user_data/strategies/meta_strategy.py` contained a large orchestrator class mixing discovery, indicators, regime logic and DCA | Use per-bot strategy classes; no global orchestrator |
 | Ad‑hoc indicator helpers scattered / imported via implicit `sys.path` | Indicators consolidated under `backend/app/trading_core/indicators` |
 | Direct imports from `user_data/strategies` in shared strategies | Shared strategies import indicators from `backend.app.trading_core.indicators` |
 | Dynamic discovery sometimes relied on ambient PYTHONPATH including repo roots | Discovery now performs a controlled, temporary `sys.path` insertion of workspace + shared strategy roots |
 | Silent fallbacks if a workspace path was invalid | Hard failure with explicit RuntimeError – no implicit fallback |
-| `meta_strategy.py` loaded by config | A thin per‑workspace shim `user_data/strategies/MainStrategy.py` imports the core package |
+| `meta_strategy.py` loaded by config | Configure each bot to point directly to its concrete strategy class |
 
 ## Goals
 
@@ -25,9 +25,8 @@ This document describes the refactor that moved the orchestration / meta strateg
 
 ```
 backend/app/trading_core/
-  __init__.py            # exports MainStrategy
-  main_strategy.py       # Orchestrator (regimes, discovery, logging, DCA hooks)
-  base.py                # BaseStrategy abstraction for light plug‑ins
+  base_strategy.py       # Minimal shared base
+  base_strategy.py       # CoreBaseStrategy (shared minimal base)
   indicators/            # ema, rsi, bbands, adx utilities
   substrategies/
     dca.py               # DCA scaling logic
@@ -36,7 +35,7 @@ backend/app/trading_core/
 Each user (and bot) workspace now receives, on creation:
 
 ```
-workspaces/<name>/user_data/strategies/MainStrategy.py  # shim
+workspaces/<name>/user_data/strategies/<YourStrategy>.py
 ```
 
 Shim content (simplified):
@@ -46,14 +45,14 @@ import sys, os
 _root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..', '..'))
 if _root not in sys.path:
     sys.path.insert(0, _root)
-from backend.app.trading_core.main_strategy import MainStrategy
+from backend.app.trading_core.base_strategy import CoreBaseStrategy
 ```
 
-Freqtrade config continues to reference `"strategy": "MainStrategy"` – the shim resolves to the core class.
+Freqtrade config should reference the per-bot strategy class (e.g., `"strategy": "MomentumPullbackStrategy"`).
 
 ## Discovery Changes
 
-`MainStrategy._discover_strategies()` now:
+Strategy discovery now scans user strategy folders directly:
 
 1. Validates `user_data_dir` exists and is literally a `user_data` folder (no fallback).
 2. Builds a list of search roots:
@@ -64,8 +63,8 @@ Freqtrade config continues to reference `"strategy": "MainStrategy"` – the shi
 4. Restores the original `sys.path` afterward (no global pollution).
 
 Strategy classes are accepted if they:
-- Subclass `BaseStrategy` (excluding the base itself), OR
-- Are duck-typed: expose callable `entry_mask(df)` and `exit_mask(df)`.
+- Subclass `CoreBaseStrategy`, OR
+  Implement Freqtrade-native methods: `populate_entry_trend(df, metadata)` and `populate_exit_trend(df, metadata)`.
 
 First occurrence of a name wins to keep precedence predictable.
 
@@ -105,8 +104,7 @@ Unchanged conceptually; decision log now writes under the workspace `logs/decisi
 If you have an older workspace that predates the automated shim creation:
 
 1. Delete (or ignore) `user_data/strategies/meta_strategy.py` if present.
-2. Create `user_data/strategies/MainStrategy.py` with the shim content above.
-3. Ensure your config points to `"strategy": "MainStrategy"`.
+2. Create `user_data/strategies/<YourStrategy>.py` with your class and point config to it.
 4. (Optional) Add shared strategy path to `meta.strategy_paths`:
    `"C:/.../ft-bot/shared/strategies/_strategies"`.
 5. Remove any direct imports of indicators from legacy locations; import from `backend.app.trading_core.indicators`.
@@ -116,7 +114,7 @@ If you have an older workspace that predates the automated shim creation:
 | Symptom | Likely Cause | Resolution |
 |---------|--------------|-----------|
 | RuntimeError: user_data_dir does not exist | Misconfigured `--userdir` or API-provided path | Point Freqtrade to a valid workspace created via backend API | 
-| RuntimeError from meta_strategy.py | Config still references deprecated file | Change strategy to `MainStrategy` (shim) |
+| RuntimeError from meta_strategy.py | Config still references deprecated file | Change strategy to your concrete strategy class |
 | Strategy list empty | No valid `_strategies` packages or missing paths; class signatures invalid | Add path to `meta.strategy_paths` or fix strategy class/duck-typed methods |
 | Indicators missing columns | Strategy declared required indicator not implemented in `required_indicators()` | Implement or adjust strategy requirements |
 

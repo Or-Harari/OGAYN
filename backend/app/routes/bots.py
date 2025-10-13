@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user, get_db
@@ -12,7 +12,8 @@ from ..schemas import (
     BotStrategyUpdate,
 )
 from ..services.workspace_service import create_bot_workspace
-from ..services.bot_service import start_bot, stop_bot, bot_status as bot_status_service
+from ..services.bot_service import start_bot, stop_bot, bot_status as bot_status_service, start_backtest, proxy_freqtrade_api, download_data
+from ..schemas import BacktestStartRequest
 
 router = APIRouter()
 
@@ -97,6 +98,89 @@ def stop_bot_route(user_id: int, bot_id: int, current=Depends(get_current_user),
     db.commit()
     db.refresh(bot)
     return {"status": bot.status}
+
+
+@router.get("/{user_id}/bots/{bot_id}/balance")
+def get_bot_balance(user_id: int, bot_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Convenience endpoint that proxies to the bot's Freqtrade /balance REST endpoint.
+
+    Requires that the bot's api_server.enabled is true in its composed config.
+    """
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    status_code, payload = proxy_freqtrade_api(bot, "GET", "/balance")
+    if status_code >= 400:
+        raise HTTPException(status_code=status_code, detail=payload)
+    return payload
+
+
+@router.post("/{user_id}/bots/{bot_id}/data/download")
+def download_bot_data(user_id: int, bot_id: int, timerange: str, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Trigger market data download for backstaging.
+
+    The endpoint derives pairs and timeframes from the bot's composed config and strategy, and downloads from Binance.
+
+    Params:
+      - timerange: Freqtrade timerange syntax, e.g., "20240101-20241231" or "-365d".
+    """
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    if not timerange or not isinstance(timerange, str):
+        raise HTTPException(status_code=422, detail="timerange is required (string)")
+    result = download_data(db, user, bot, timerange)
+    return result
+
+
+@router.api_route("/{user_id}/bots/{bot_id}/proxy/freqtrade/{full_path:path}", methods=["GET", "POST", "DELETE", "PUT", "PATCH"])
+async def proxy_freqtrade(user_id: int, bot_id: int, full_path: str, request: Request, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Generic proxy: forward to the bot's Freqtrade REST API at /api/v1/<full_path>.
+
+    Auth is handled by our backend; Freqtrade API should be bound to localhost with strong creds.
+    """
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    # Extract method, query and JSON body if present
+    method = request.method
+    params = dict(request.query_params)
+    body = None
+    try:
+        if request.headers.get("content-type", "").lower().startswith("application/json"):
+            body = await request.json()
+    except Exception:
+        body = None
+    status_code, payload = proxy_freqtrade_api(bot, method, "/" + full_path, params=params or None, body=body)
+    if status_code >= 400:
+        raise HTTPException(status_code=status_code, detail=payload)
+    return payload
+
+
+@router.post("/{user_id}/bots/{bot_id}/backtest")
+def start_backtest_route(user_id: int, bot_id: int, req: BacktestStartRequest, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    rec = start_backtest(db, user, bot, req)
+    bot.status = rec.status
+    bot.pid = rec.pid
+    bot.config_path = rec.config_path
+    db.commit()
+    db.refresh(bot)
+    return {"status": bot.status, "pid": bot.pid, "config": bot.config_path}
 
 
 @router.get("/{user_id}/bots/{bot_id}/status")

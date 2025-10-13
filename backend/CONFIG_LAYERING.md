@@ -26,7 +26,7 @@ Bot-level required (structural presence + semantic rules; excludes all items lis
 - `entry_pricing.price_last_balance` (float)
 - `entry_pricing.price_side` (one of ask|bid|same|other)
 - `exit_pricing.price_side` (one of ask|bid|same|other)
-- `strategy` (string class name; defaults to MainStrategy)
+- `strategy` (string class name; must be set per-bot)
  - `trading_mode` (spot|futures) – futures-only keys like `liquidation_buffer`/`margin_mode` are filtered out in spot mode.
 
 Validation occurs at bot start (pre-spawn). All structural requirements must be satisfied; some values may be placeholders during authoring but must be valid when launching (e.g. non-empty `pair_whitelist`).

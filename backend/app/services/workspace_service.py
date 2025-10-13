@@ -65,11 +65,11 @@ def create_bot_workspace(user_root: str, bot_name: str) -> str:
     """Create a bot runtime workspace.
 
     Layout:
-      <user_root>/../bots/<bot_name>/user_data/
-        configs/bot.json
-        strategies/MainStrategy.py (shim only)
-        logs/
-        data/
+            <user_root>/../bots/<bot_name>/user_data/
+                configs/bot.json
+                strategies/
+                logs/
+                data/
 
     Returns absolute path to the bot's user_data root.
     """
@@ -87,8 +87,9 @@ def create_bot_workspace(user_root: str, bot_name: str) -> str:
             import json as _json
             bot_cfg.write_text(_json.dumps(BOT_PLACEHOLDER, indent=2), encoding="utf-8")
         except Exception:
+            # Provide a placeholder strategy name; user should set this explicitly.
             bot_cfg.write_text(
-                '{"dry_run": true, "stake_currency": "USDT", "timeframe": "1m", "pair_whitelist": ["BTC/USDT", "ETH/USDT"], "strategy": "MainStrategy"}',
+                '{"dry_run": true, "stake_currency": "USDT", "timeframe": "1m", "pair_whitelist": ["BTC/USDT", "ETH/USDT"], "strategy": "__SET_YOUR_STRATEGY__"}',
                 encoding="utf-8",
             )
     # Seed mode-specific templates if absent
@@ -110,30 +111,7 @@ def create_bot_workspace(user_root: str, bot_name: str) -> str:
             '{"dry_run": true, "backstage": true}',
             encoding="utf-8",
         )
-    # Create shim
-    shim = bots_root / "strategies" / "MainStrategy.py"
-    if not shim.exists():
-        shim.write_text(
-            (
-                "import sys, pathlib\n"
-                "# Ascend to locate project root containing backend/app\n"
-                "_p = pathlib.Path(__file__).resolve().parent\n"
-                "_root = None\n"
-                "for _ in range(12):\n"
-                "    if (_p / 'backend' / 'app').is_dir():\n"
-                "        _root = _p\n"
-                "        break\n"
-                "    if _p.parent == _p: break\n"
-                "    _p = _p.parent\n"
-                "if not _root: raise RuntimeError('Cannot locate project root (backend/app) for MainStrategy shim')\n"
-                "if str(_root) not in sys.path: sys.path.insert(0, str(_root))\n"
-                "from backend.app.trading_core.main_strategy import MainStrategy as _CoreMainStrategy\n"
-                "class MainStrategy(_CoreMainStrategy):\n"
-                "    pass\n"
-                "__all__ = ['MainStrategy']\n"
-            ),
-            encoding="utf-8",
-        )
+    # Do not create any global orchestrator shim; strategies are per-bot and self-contained.
     return str(bots_root)
 
 
