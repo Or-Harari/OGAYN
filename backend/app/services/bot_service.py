@@ -22,6 +22,47 @@ def _which_freqtrade() -> str:
     return "freqtrade"
 
 
+def _docker_available() -> bool:
+    try:
+        subprocess.run(["docker", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        return True
+    except Exception:
+        return False
+
+
+def _bot_runtime(bot_userdir: Path) -> str:
+    """Return 'docker' or 'host' depending on bot config (defaults to host)."""
+    try:
+        cfg_path = bot_userdir / "configs" / "bot.json"
+        if cfg_path.exists():
+            with cfg_path.open("r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            rt = (data.get("runtime") or "host").lower()
+            return rt if rt in {"docker", "host"} else "host"
+    except Exception:
+        pass
+    return "host"
+
+
+def _docker_container_name(bot: Bot) -> str:
+    return f"ft-bot-{bot.id}"
+
+
+def _docker_is_running(name: str) -> bool:
+    try:
+        out = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", name], capture_output=True, text=True)
+        return out.returncode == 0 and out.stdout.strip().lower() == "true"
+    except Exception:
+        return False
+
+
+def _docker_remove_container(name: str) -> None:
+    try:
+        subprocess.run(["docker", "rm", "-f", name], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:
+        pass
+
+
 def _log_command(out_log: Path, cmd: list[str], env_additions: dict[str, str]) -> None:
     line = f"\n==== BOT START {time.strftime('%Y-%m-%d %H:%M:%S')} ===\nCMD: {' '.join(cmd)}\nENV_ADD: {json.dumps(env_additions)}\n"
     out_log.parent.mkdir(parents=True, exist_ok=True)
@@ -101,6 +142,76 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
     logs_dir.mkdir(parents=True, exist_ok=True)
     out_log = logs_dir / "bot.out.log"
     err_log = logs_dir / "bot.err.log"
+
+    # Docker runtime branch
+    runtime = _bot_runtime(bot_userdir)
+    if runtime == "docker":
+        if not _docker_available():
+            raise HTTPException(status_code=503, detail="Docker is not available on this host.")
+        name = _docker_container_name(bot)
+        if _docker_is_running(name):
+            raise HTTPException(status_code=409, detail={"message": "Bot container is already running", "container": name})
+        # Ensure strategy presence prior to running
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg_json = json.load(f)
+            if not cfg_json.get("strategy"):
+                raise HTTPException(status_code=422, detail="Strategy not set in composed config. Please specify a concrete strategy class name.")
+        except HTTPException:
+            raise
+        except Exception:
+            pass
+        # Publish API port
+        try:
+            api = cfg_json.get("api_server", {}) if 'cfg_json' in locals() else {}
+            host_port = int(api.get("listen_port", 8080) if api else 8080)
+        except Exception:
+            host_port = 8080
+        # Strategy extras mount
+        extra_strategy_dir = Path(user_root) / "user" / "strategies"
+        docker_py_path = "/freqtrade/user_data:/freqtrade"
+        volumes: list[str] = [f"{str(bot_userdir)}:/freqtrade/user_data"]
+        if extra_strategy_dir.exists():
+            volumes.append(f"{str(extra_strategy_dir)}:/freqtrade/extra_strategies")
+            docker_py_path = f"{docker_py_path}:/freqtrade/extra_strategies"
+        cmd = [
+            "docker", "run", "-d",
+            "--name", name,
+            "-p", f"127.0.0.1:{host_port}:8080",
+        ]
+        for v in volumes:
+            cmd += ["-v", v]
+        cmd += ["-e", f"PYTHONPATH={docker_py_path}"]
+        cmd += [
+            os.environ.get("FREQTRADE_IMAGE", "freqtradeorg/freqtrade:stable"),
+            "trade",
+            "--config", "/freqtrade/user_data/configs/config.generated.json",
+            "--userdir", "/freqtrade/user_data",
+        ]
+        env = os.environ.copy()
+        _log_command(out_log, cmd, {"DOCKER": "true"})
+        with out_log.open("ab") as out, err_log.open("ab") as err:
+            subprocess.Popen(
+                cmd,
+                stdout=out,
+                stderr=err,
+                cwd=str(bot_userdir),
+                shell=False,
+                env=env,
+            )
+        # Persist / replace existing BotProcess for this bot
+        rec = db.query(BotProcess).filter(BotProcess.bot_id == bot.id).first()
+        if not rec:
+            rec = BotProcess(bot_id=bot.id)
+            db.add(rec)
+        rec.pid = None
+        rec.status = "running"
+        rec.config_path = str(cfg_path)
+        rec.exit_code = None
+        rec.last_error = None
+        db.commit()
+        db.refresh(rec)
+        return rec
 
     cmd = [
         _which_freqtrade(),
@@ -183,6 +294,20 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
 def stop_bot(db: Session, bot: Bot) -> BotProcess:
     rec = db.query(BotProcess).filter(BotProcess.bot_id == bot.id).first()
     if not rec or not rec.pid:
+        # If docker runtime, remove container
+        bot_userdir = Path(bot.userdir).resolve()
+        if _bot_runtime(bot_userdir) == "docker":
+            name = _docker_container_name(bot)
+            if _docker_is_running(name):
+                _docker_remove_container(name)
+            if not rec:
+                rec = BotProcess(bot_id=bot.id, status="stopped")
+                db.add(rec)
+            rec.status = "stopped"
+            rec.pid = None
+            db.commit()
+            db.refresh(rec)
+            return rec
         if not rec:
             rec = BotProcess(bot_id=bot.id, status="stopped")
             db.add(rec)
@@ -209,6 +334,18 @@ def stop_bot(db: Session, bot: Bot) -> BotProcess:
 
 def bot_status(db: Session, bot: Bot):
     rec = db.query(BotProcess).filter(BotProcess.bot_id == bot.id).first()
+    bot_userdir = Path(bot.userdir).resolve()
+    if _bot_runtime(bot_userdir) == "docker":
+        name = _docker_container_name(bot)
+        running = _docker_is_running(name)
+        return {
+            "status": "running" if running else (rec.status if rec else "stopped"),
+            "pid": None,
+            "config": rec.config_path if rec else None,
+            "exit_code": rec.exit_code if rec else None,
+            "last_error": rec.last_error if rec else None,
+            "container": name,
+        }
     if not rec or not rec.pid:
         return {"status": rec.status if rec else "stopped"}
     try:
@@ -266,14 +403,36 @@ def start_backtest(db: Session, user: User, bot: Bot, params: BacktestStartReque
     out_log = logs_dir / "backtest.out.log"
     err_log = logs_dir / "backtest.err.log"
 
-    cmd = [
-        _which_freqtrade(),
-        "backtesting",
-        "--config",
-        str(cfg_path),
-        "--userdir",
-        str(bot_userdir),
-    ]
+    # Docker runtime
+    if _bot_runtime(bot_userdir) == "docker":
+        if not _docker_available():
+            raise HTTPException(status_code=503, detail="Docker is not available on this host.")
+        name = f"ft-bt-{bot.id}-{int(time.time())}"
+        extra_strategy_dir = Path(user_root) / "user" / "strategies"
+        docker_py_path = "/freqtrade/user_data:/freqtrade"
+        volumes = [f"{str(bot_userdir)}:/freqtrade/user_data"]
+        if extra_strategy_dir.exists():
+            volumes.append(f"{str(extra_strategy_dir)}:/freqtrade/extra_strategies")
+            docker_py_path = f"{docker_py_path}:/freqtrade/extra_strategies"
+        cmd = ["docker", "run", "-d", "--name", name]
+        for v in volumes:
+            cmd += ["-v", v]
+        cmd += ["-e", f"PYTHONPATH={docker_py_path}"]
+        cmd += [
+            os.environ.get("FREQTRADE_IMAGE", "freqtradeorg/freqtrade:stable"),
+            "backtesting",
+            "--config", "/freqtrade/user_data/configs/config.generated.json",
+            "--userdir", "/freqtrade/user_data",
+        ]
+    else:
+        cmd = [
+            _which_freqtrade(),
+            "backtesting",
+            "--config",
+            str(cfg_path),
+            "--userdir",
+            str(bot_userdir),
+        ]
     if params.strategy:
         cmd += ["--strategy", params.strategy]
     if params.timerange:
@@ -479,22 +638,49 @@ def download_data(db: Session, user: User, bot: Bot, timerange: str) -> dict:
     out_log = logs_dir / "download-data.out.log"
     err_log = logs_dir / "download-data.err.log"
 
-    cmd = [
-        _which_freqtrade(),
-        "download-data",
-        "--exchange",
-        "binance",
-        "--timerange",
-        timerange,
-        "--userdir",
-        str(bot_userdir),
-        "--config",
-        str(cfg_path),
-    ]
-    for tf in timeframes:
-        cmd += ["-t", tf]
-    for p in pairs:
-        cmd += ["-p", p]
+    if _bot_runtime(bot_userdir) == "docker":
+        if not _docker_available():
+            raise HTTPException(status_code=503, detail="Docker is not available on this host.")
+        name = f"ft-dl-{bot.id}-{int(time.time())}"
+        extra_strategy_dir = Path(user_root) / "user" / "strategies"
+        docker_py_path = "/freqtrade/user_data:/freqtrade"
+        volumes = [f"{str(bot_userdir)}:/freqtrade/user_data"]
+        if extra_strategy_dir.exists():
+            volumes.append(f"{str(extra_strategy_dir)}:/freqtrade/extra_strategies")
+            docker_py_path = f"{docker_py_path}:/freqtrade/extra_strategies"
+        cmd = ["docker", "run", "-d", "--name", name]
+        for v in volumes:
+            cmd += ["-v", v]
+        cmd += ["-e", f"PYTHONPATH={docker_py_path}"]
+        cmd += [
+            os.environ.get("FREQTRADE_IMAGE", "freqtradeorg/freqtrade:stable"),
+            "download-data",
+            "--exchange", "binance",
+            "--timerange", timerange,
+            "--userdir", "/freqtrade/user_data",
+            "--config", "/freqtrade/user_data/configs/config.generated.json",
+        ]
+        for tf in timeframes:
+            cmd += ["-t", tf]
+        for p in pairs:
+            cmd += ["-p", p]
+    else:
+        cmd = [
+            _which_freqtrade(),
+            "download-data",
+            "--exchange",
+            "binance",
+            "--timerange",
+            timerange,
+            "--userdir",
+            str(bot_userdir),
+            "--config",
+            str(cfg_path),
+        ]
+        for tf in timeframes:
+            cmd += ["-t", tf]
+        for p in pairs:
+            cmd += ["-p", p]
 
     # Env setup similar to start_bot
     env = os.environ.copy()
