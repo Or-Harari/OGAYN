@@ -13,6 +13,7 @@ from ..schemas import (
 )
 from ..services.workspace_service import create_bot_workspace
 from ..services.bot_service import start_bot, stop_bot, bot_status as bot_status_service, start_backtest, proxy_freqtrade_api, download_data, get_runtime_info
+from ..services import analytics_runtime as rt
 from ..schemas import BacktestStartRequest, RuntimeInfo
 
 router = APIRouter()
@@ -81,6 +82,10 @@ def start_bot_route(user_id: int, bot_id: int, current=Depends(get_current_user)
     bot.config_path = rec.config_path
     db.commit()
     db.refresh(bot)
+    try:
+        rt.start_collector(user, bot)
+    except Exception:
+        pass
     return {"status": bot.status, "pid": bot.pid, "config": bot.config_path}
 
 
@@ -97,6 +102,11 @@ def stop_bot_route(user_id: int, bot_id: int, current=Depends(get_current_user),
     bot.pid = None
     db.commit()
     db.refresh(bot)
+    try:
+        import asyncio
+        asyncio.create_task(rt.stop_collector(bot.id))
+    except Exception:
+        pass
     return {"status": bot.status}
 
 
