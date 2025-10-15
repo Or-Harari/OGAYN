@@ -9,3 +9,5 @@ email-validator==2.2.0
 python-multipart==0.0.9
 psutil==5.9.8
 requests==2.32.3
+pandas==2.2.2
+numpy==1.26.4
