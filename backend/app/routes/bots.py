@@ -12,8 +12,8 @@ from ..schemas import (
     BotStrategyUpdate,
 )
 from ..services.workspace_service import create_bot_workspace
-from ..services.bot_service import start_bot, stop_bot, bot_status as bot_status_service, start_backtest, proxy_freqtrade_api, download_data
-from ..schemas import BacktestStartRequest
+from ..services.bot_service import start_bot, stop_bot, bot_status as bot_status_service, start_backtest, proxy_freqtrade_api, download_data, get_runtime_info
+from ..schemas import BacktestStartRequest, RuntimeInfo
 
 router = APIRouter()
 
@@ -139,7 +139,7 @@ def download_bot_data(user_id: int, bot_id: int, timerange: str, current=Depends
     return result
 
 
-@router.api_route("/{user_id}/bots/{bot_id}/proxy/freqtrade/{full_path:path}", methods=["GET", "POST", "DELETE", "PUT", "PATCH"])
+@router.api_route("/{user_id}/bots/{bot_id}/proxy/freqtrade/{full_path:path}", methods=["GET", "POST", "DELETE", "PUT", "PATCH", "HEAD", "OPTIONS"])
 async def proxy_freqtrade(user_id: int, bot_id: int, full_path: str, request: Request, current=Depends(get_current_user), db: Session = Depends(get_db)):
     """Generic proxy: forward to the bot's Freqtrade REST API at /api/v1/<full_path>.
 
@@ -155,12 +155,24 @@ async def proxy_freqtrade(user_id: int, bot_id: int, full_path: str, request: Re
     method = request.method
     params = dict(request.query_params)
     body = None
+    raw_body = None
     try:
+        # Try JSON first
         if request.headers.get("content-type", "").lower().startswith("application/json"):
             body = await request.json()
+        else:
+            raw_body = await request.body()
     except Exception:
-        body = None
-    status_code, payload = proxy_freqtrade_api(bot, method, "/" + full_path, params=params or None, body=body)
+        raw_body = None
+    status_code, payload = proxy_freqtrade_api(
+        bot,
+        method,
+        "/" + full_path,
+        params=params or None,
+        body=body,
+        raw_body=raw_body,
+        headers=dict(request.headers),
+    )
     if status_code >= 400:
         raise HTTPException(status_code=status_code, detail=payload)
     return payload
@@ -193,6 +205,18 @@ def bot_status_route(user_id: int, bot_id: int, current=Depends(get_current_user
         raise HTTPException(status_code=404, detail="Bot not found")
     st = bot_status_service(db, bot)
     return st
+
+
+@router.get("/{user_id}/bots/{bot_id}/runtime", response_model=RuntimeInfo)
+def bot_runtime_route(user_id: int, bot_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    info = get_runtime_info(db, user, bot)
+    return info
 
 
 @router.patch("/{user_id}/bots/{bot_id}/mode", response_model=BotRead)

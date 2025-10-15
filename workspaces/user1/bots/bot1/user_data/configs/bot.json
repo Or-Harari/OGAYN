@@ -1,5 +1,6 @@
 {
   "dry_run": true,
+  "runtime": "docker",
   "stake_currency": "USDT",
   "stake_amount": 10.0,
   "max_open_trades": 3,

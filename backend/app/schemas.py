@@ -178,3 +178,13 @@ class BacktestStartRequest(BaseModel):
     strategy: str | None = None
     export: Literal['none', 'trades'] = 'trades'
     export_filename: str | None = None
+
+
+class RuntimeInfo(BaseModel):
+    runtime: Literal['host', 'docker']
+    container_name: str | None = None
+    api_host: str | None = None
+    api_port: int | None = None
+    api_base: str | None = None
+    running: bool | None = None
+    config_path: str | None = None
