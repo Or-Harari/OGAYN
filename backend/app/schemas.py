@@ -88,6 +88,10 @@ class UserConfigPatch(BaseModel):
 class BotConfigPatch(BaseModel):
     pair_whitelist: list[str] | None = None
     stake_currency: str | None = None
+    stake_amount: float | str | None = None
+    trading_mode: Literal['spot', 'futures'] | None = None
+    margin_mode: str | None = None
+    liquidation_buffer: float | None = None
     timeframe: str | None = None
     minimal_roi: dict | None = None
     stoploss: float | None = None

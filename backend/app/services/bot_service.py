@@ -5,6 +5,7 @@ import subprocess
 import json
 import time
 from pathlib import Path
+import sqlite3
 from typing import Optional
 
 from sqlalchemy.orm import Session
@@ -72,7 +73,7 @@ def _containerize_strategy_path(user_root: Path, bot_userdir: Path, host_path: s
     """Translate a host strategy path to the container mount path.
 
     - If under bot_userdir -> /freqtrade/user_data/<relative>
-    - If under user_root/user/strategies -> /freqtrade/extra_strategies/<relative>
+    - If under user_root/strategies -> /freqtrade/extra_strategies/<relative>
     Returns None if the path cannot be mapped to known mounts.
     """
     if not host_path:
@@ -89,9 +90,8 @@ def _containerize_strategy_path(user_root: Path, bot_userdir: Path, host_path: s
     except Exception:
         pass
     # user workspace extra strategies
-    # We mount /freqtrade/extra_strategies to either <user>/user/strategies/variants (preferred) or <user>/user/strategies
-    preferred = (user_root / "user" / "strategies" / "variants").resolve()
-    extra_base = preferred if preferred.exists() else (user_root / "user" / "strategies").resolve()
+    # We mount /freqtrade/extra_strategies to unified <user>/strategies
+    extra_base = (user_root / "strategies").resolve()
     try:
         rel = hp.relative_to(extra_base)
         return "/freqtrade/extra_strategies/" + rel.as_posix()
@@ -207,11 +207,8 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
                 json.dump(cfg_json, f, indent=2)
     except Exception:
         pass
-    # Strategy extras mount
-    # Prefer shared 'variants' folder if present, else fall back to 'strategies'
-    extra_strategy_dir = Path(user_root) / "user" / "strategies" / "variants"
-    if not extra_strategy_dir.exists():
-        extra_strategy_dir = Path(user_root) / "user" / "strategies"
+    # Strategy extras mount - unified user strategies directory
+    extra_strategy_dir = Path(user_root) / "strategies"
     # Mount repo root to make `backend.app.*` imports available inside the container
     file_path = Path(__file__).resolve()
     try:
@@ -228,7 +225,8 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
     cmd = [
         "docker", "run", "-d",
         "--name", name,
-        "-p", f"127.0.0.1:{host_port}:8080",
+        # Map host listen_port -> container listen_port (matches Freqtrade config)
+        "-p", f"127.0.0.1:{host_port}:{host_port}",
     ]
     for v in volumes:
         cmd += ["-v", v]
@@ -243,15 +241,60 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
         cmd += ["--strategy-path", container_spath]
     env = os.environ.copy()
     _log_command(out_log, cmd, {"DOCKER": "true"})
-    with out_log.open("ab") as out, err_log.open("ab") as err:
-        subprocess.Popen(
-            cmd,
-            stdout=out,
-            stderr=err,
-            cwd=str(bot_userdir),
-            shell=False,
-            env=env,
-        )
+    # Run docker command synchronously to detect immediate failures (e.g., daemon down)
+    try:
+        with out_log.open("ab") as out, err_log.open("ab") as err:
+            subprocess.run(
+                cmd,
+                stdout=out,
+                stderr=err,
+                cwd=str(bot_userdir),
+                shell=False,
+                env=env,
+                check=True,
+            )
+    except Exception as e:
+        # Mark process as error and include a brief error snippet for diagnostics
+        rec = db.query(BotProcess).filter(BotProcess.bot_id == bot.id).first()
+        if not rec:
+            rec = BotProcess(bot_id=bot.id)
+            db.add(rec)
+        rec.pid = None
+        rec.status = "error"
+        rec.config_path = str(cfg_path)
+        rec.exit_code = 1
+        try:
+            with err_log.open("rb") as ef:
+                data = ef.read()[-2048:]
+            snippet = data.decode("utf-8", errors="ignore").strip()
+            rec.last_error = snippet.splitlines()[-1] if snippet else str(e)
+        except Exception:
+            rec.last_error = str(e)
+        db.commit()
+        db.refresh(rec)
+        raise HTTPException(status_code=502, detail={"message": "Failed to start bot container. Ensure Docker Desktop is running.", "error": rec.last_error})
+
+    # Verify container actually running; otherwise flag as error
+    if not _docker_is_running(name):
+        rec = db.query(BotProcess).filter(BotProcess.bot_id == bot.id).first()
+        if not rec:
+            rec = BotProcess(bot_id=bot.id)
+            db.add(rec)
+        rec.pid = None
+        rec.status = "error"
+        rec.config_path = str(cfg_path)
+        rec.exit_code = 1
+        try:
+            with err_log.open("rb") as ef:
+                data = ef.read()[-2048:]
+            snippet = data.decode("utf-8", errors="ignore").strip()
+            rec.last_error = snippet.splitlines()[-1] if snippet else "Container not running after start"
+        except Exception:
+            rec.last_error = "Container not running after start"
+        db.commit()
+        db.refresh(rec)
+        raise HTTPException(status_code=502, detail={"message": "Bot container is not running after start.", "error": rec.last_error})
+
     # Persist / replace existing BotProcess for this bot
     rec = db.query(BotProcess).filter(BotProcess.bot_id == bot.id).first()
     if not rec:
@@ -265,6 +308,9 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
     db.commit()
     db.refresh(rec)
     return rec
+
+
+# start_api_only removed per revised design
 
 
 def stop_bot(db: Session, bot: Bot) -> BotProcess:
@@ -286,8 +332,16 @@ def bot_status(db: Session, bot: Bot):
     rec = db.query(BotProcess).filter(BotProcess.bot_id == bot.id).first()
     name = _docker_container_name(bot)
     running = _docker_is_running(name)
+    # Report running only if the container is actually running. Otherwise prefer 'stopped';
+    # keep 'backtesting' or 'error' statuses to aid diagnostics.
+    if running:
+        status = "running"
+    else:
+        status = "stopped"
+        if rec and rec.status in {"backtesting", "error"}:
+            status = rec.status
     return {
-        "status": "running" if running else (rec.status if rec else "stopped"),
+        "status": status,
         "pid": None,
         "config": rec.config_path if rec else None,
         "exit_code": rec.exit_code if rec else None,
@@ -343,9 +397,7 @@ def start_backtest(db: Session, user: User, bot: Bot, params: BacktestStartReque
 
     # Build docker command for backtesting
     name = f"ft-bt-{bot.id}-{int(time.time())}"
-    extra_strategy_dir = Path(user_root) / "user" / "strategies" / "variants"
-    if not extra_strategy_dir.exists():
-        extra_strategy_dir = Path(user_root) / "user" / "strategies"
+    extra_strategy_dir = Path(user_root) / "strategies"
     file_path = Path(__file__).resolve()
     try:
         repo_root = file_path.parents[3]
@@ -455,9 +507,9 @@ def _bot_freqtrade_api_base(bot: Bot) -> str | None:
     api = _load_api_server_from_config(bot.config_path) or {}
     if not api or not api.get("enabled"):
         return None
-    host = api.get("listen_ip_address", "127.0.0.1")
+    # Always use host loopback; we publish container port to 127.0.0.1:port
     port = api.get("listen_port", 8080)
-    return f"http://{host}:{port}/api/v1"
+    return f"http://127.0.0.1:{port}/api/v1"
 
 
 def proxy_freqtrade_api(
@@ -512,6 +564,130 @@ def proxy_freqtrade_api(
             return resp.status_code, resp.text
     except Exception as e:
         return 502, {"error": str(e)}
+
+
+def _read_trades_from_sqlite(db_path: Path, mode_label: str, bot_id: int, limit: int | None = None) -> list[dict]:
+    """Read trades from a Freqtrade SQLite file defensively.
+
+    - db_path: path to tradesv3[.dryrun].sqlite
+    - mode_label: 'live' or 'dryrun' (used to label rows and de-dupe ids)
+    - bot_id: current bot id to include in rows
+    - limit: optional max rows to return (applied after ordering)
+    """
+    if not db_path.exists():
+        return []
+    try:
+        uri = f"file:{db_path.as_posix()}?mode=ro"
+        conn = sqlite3.connect(uri, uri=True)
+        conn.row_factory = sqlite3.Row
+    except Exception:
+        return []
+    try:
+        cur = conn.cursor()
+        # Verify table exists
+        try:
+            cur.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='trades'")
+            if not cur.fetchone():
+                return []
+        except Exception:
+            return []
+        # Determine available columns
+        cols = []
+        try:
+            cur.execute("PRAGMA table_info('trades')")
+            cols = [r[1] for r in cur.fetchall()]
+        except Exception:
+            cols = []
+        # Build projection with fallbacks
+        def has(c: str) -> bool:
+            return c in cols
+        select_cols = [
+            "id",
+            *( ["pair"] if has("pair") else [] ),
+            *( ["is_short"] if has("is_short") else [] ),
+            *( ["open_date"] if has("open_date") else [] ),
+            *( ["open_rate"] if has("open_rate") else [] ),
+            *( ["close_date"] if has("close_date") else [] ),
+            *( ["close_rate"] if has("close_rate") else [] ),
+            *( ["profit_abs"] if has("profit_abs") else [] ),
+            *( ["profit_ratio"] if has("profit_ratio") else [] ),
+            *( ["is_open"] if has("is_open") else [] ),
+            *( ["sell_reason"] if has("sell_reason") else [] ),
+        ]
+        if not select_cols:
+            return []
+        sql = f"SELECT {', '.join(select_cols)} FROM trades ORDER BY id DESC"
+        if limit and isinstance(limit, int) and limit > 0:
+            sql += f" LIMIT {int(limit)}"
+        rows = cur.execute(sql).fetchall()
+        out: list[dict] = []
+        for r in rows:
+            d = dict(r)
+            rid = d.get("id")
+            # Prefix id with mode to avoid collisions across DBs
+            uid = f"{mode_label}:{rid}" if rid is not None else f"{mode_label}:{len(out)}"
+            pair = d.get("pair")
+            is_short = bool(d.get("is_short")) if "is_short" in d else False
+            side = "short" if is_short else "long"
+            open_date = d.get("open_date")
+            close_date = d.get("close_date")
+            is_open = d.get("is_open")
+            status = "open" if (is_open == 1 or (is_open is True)) or (close_date in (None, "")) else "closed"
+            out.append({
+                "id": uid,
+                "bot_id": bot_id,
+                "mode": mode_label,
+                "pair": pair,
+                "side": side,
+                "open_rate": d.get("open_rate"),
+                "close_rate": d.get("close_rate"),
+                "profit_abs": d.get("profit_abs"),
+                "profit_ratio": d.get("profit_ratio"),
+                "open_date": open_date,
+                "close_date": close_date,
+                "status": status,
+                "sell_reason": d.get("sell_reason"),
+            })
+        return out
+    except Exception:
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def get_trades_history(user: User, bot: Bot, mode: str | None = None, limit: int | None = None) -> list[dict]:
+    """Aggregate trades from the bot's local SQLite databases.
+
+    - mode: 'live' | 'dryrun' | 'all' (default 'all')
+    - limit: optional max rows per DB (applied per selected DB)
+    Returns a merged, newest-first list with a 'mode' field per row.
+    """
+    bot_userdir = Path(bot.userdir).resolve()
+    targets: list[tuple[Path, str]] = []
+    m = (mode or "all").lower()
+    live_db = bot_userdir / "tradesv3.sqlite"
+    dry_db = bot_userdir / "tradesv3.dryrun.sqlite"
+    if m in ("live",):
+        targets.append((live_db, "live"))
+    elif m in ("dry", "dryrun"):
+        targets.append((dry_db, "dryrun"))
+    else:
+        # all
+        targets.append((live_db, "live"))
+        targets.append((dry_db, "dryrun"))
+    all_rows: list[dict] = []
+    for path, label in targets:
+        all_rows.extend(_read_trades_from_sqlite(path, label, bot.id, limit=limit))
+    # Merge-sort by open_date desc then id if present
+    def sort_key(d: dict):
+        # open_date may be ISO string or None; sort None last
+        od = d.get("open_date") or ""
+        return (od, str(d.get("id") or ""))
+    all_rows.sort(key=sort_key, reverse=True)
+    return all_rows
 
 
 def _import_strategy_timeframes(cfg_path: str) -> list[str]:
@@ -642,13 +818,7 @@ def download_data(db: Session, user: User, bot: Bot, timerange: str) -> dict:
 
     # Build docker command for download-data
     name = f"ft-dl-{bot.id}-{int(time.time())}"
-    _candidates = [
-        Path(user_root) / "user" / "strategies" / "variants",
-        Path(user_root) / "strategies" / "variants",
-        Path(user_root) / "user" / "strategies",
-        Path(user_root) / "strategies",
-    ]
-    extra_strategy_dir = next((p for p in _candidates if p.exists()), None)
+    extra_strategy_dir = Path(user_root) / "strategies"
     file_path = Path(__file__).resolve()
     try:
         repo_root = file_path.parents[3]
@@ -753,14 +923,36 @@ def get_runtime_info(db: Session, user: User, bot: Bot) -> dict:
     api_host: Optional[str] = None
     api_port: Optional[int] = None
     api_base: Optional[str] = None
+    effective_strategy: Optional[str] = None
+    effective_strategy_path: Optional[str] = None
+    active_strategy_meta: Optional[dict] = None
     if cfg_path:
-        api_cfg = _load_api_server_from_config(cfg_path) or {}
-        api_host = api_cfg.get("listen_ip_address", "127.0.0.1") if isinstance(api_cfg, dict) else "127.0.0.1"
+        # Load generated config to derive API and effective strategy information
+        try:
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                _cfgjson = json.load(f) or {}
+        except Exception:
+            _cfgjson = {}
+        api_cfg = (_cfgjson.get("api_server") or {}) if isinstance(_cfgjson, dict) else {}
+        # Report host-side address
+        api_host = "127.0.0.1"
         try:
             api_port = int(api_cfg.get("listen_port", 8080)) if isinstance(api_cfg, dict) else 8080
         except Exception:
             api_port = 8080
         api_base = f"http://{api_host}:{api_port}/api/v1"
+        # Strategy details
+        try:
+            effective_strategy = _cfgjson.get("strategy")
+            effective_strategy_path = _cfgjson.get("strategy_path")
+            # Look for active_strategy in multiple meta locations
+            active_strategy_meta = (
+                (_cfgjson.get("meta") or {}).get("active_strategy")
+                or ((_cfgjson.get("custom_info") or {}).get("meta") or {}).get("active_strategy")
+                or ((_cfgjson.get("strategy_parameters") or {}).get("meta") or {}).get("active_strategy")
+            )
+        except Exception:
+            pass
 
     # Determine running state
     running: Optional[bool] = None
@@ -773,6 +965,10 @@ def get_runtime_info(db: Session, user: User, bot: Bot) -> dict:
         "api_host": api_host,
         "api_port": api_port,
         "api_base": api_base,
+        "strategy": effective_strategy,
+        "strategy_path": effective_strategy_path,
+        "active_strategy": active_strategy_meta,
+        "effective_strategy": (active_strategy_meta.get("clazz") if isinstance(active_strategy_meta, dict) and active_strategy_meta.get("clazz") else effective_strategy),
         "running": running,
         "config_path": cfg_path,
     }

@@ -11,7 +11,9 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from ..db.models import User, Bot
-from .bot_service import proxy_freqtrade_api
+from .bot_service import proxy_freqtrade_api, _get_freqtrade_image, _docker_image_ensure
+import subprocess
+import os
 
 
 def _host_strategy_path(user_root: Path, bot_userdir: Path, spath: Optional[str]) -> Optional[Path]:
@@ -242,10 +244,16 @@ def snapshot(db: Session, user: User, bot: Bot, limit: int = 200) -> dict:
                     base_cols = {"date", "open", "high", "low", "close", "volume"}
                     for col in sdf.columns:
                         if col not in base_cols:
-                            try:
-                                indicators[col] = [None if pd.isna(v) else float(v) for v in sdf[col].tolist()]  # type: ignore
-                            except Exception:
-                                pass
+                            vals = []
+                            for v in sdf[col].tolist():
+                                try:
+                                    vals.append(None if v is None or (hasattr(v, 'isna') and v.isna()) else float(v))
+                                except Exception:
+                                    try:
+                                        vals.append(float(v))
+                                    except Exception:
+                                        vals.append(None)
+                            indicators[col] = vals
                     # Common signal columns
                     for col in ("buy", "sell", "enter_long", "exit_long"):
                         if col in sdf.columns:
@@ -301,3 +309,180 @@ def snapshot(db: Session, user: User, bot: Bot, limit: int = 200) -> dict:
         "profit": profit,
         "performance": performance,
     }
+
+
+def parity_snapshot(db: Session, user: User, bot: Bot, timeframe: Optional[str] = None, limit: int = 200, pairs: Optional[list[str]] = None) -> dict:
+    """Build an analytics snapshot using Freqtrade internals inside the Docker image for full parity.
+
+    Runs a short-lived container that:
+      - Loads config.generated.json
+      - Resolves strategy via StrategyResolver
+      - Uses DataProvider and analyze_ticker() to compute indicators/signals
+      - Loads candles from datadir for the requested timeframe and pairs
+    Returns JSON similar to snapshot().
+    """
+    user_root = Path(user.workspace_root).resolve()
+    bot_userdir = Path(bot.userdir).resolve()
+
+    # Ensure analytics script exists under user_data
+    analytics_dir = bot_userdir / "analytics"
+    analytics_dir.mkdir(parents=True, exist_ok=True)
+    script_path = analytics_dir / "collect_snapshot.py"
+    script = r'''
+import json
+import sys
+import argparse
+from pathlib import Path
+
+from freqtrade.configuration import Configuration
+from freqtrade.data.history import load_pair_history
+from freqtrade.enums import CandleType
+from freqtrade.resolvers import StrategyResolver
+from freqtrade.data.dataprovider import DataProvider
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument('--config', required=True)
+    ap.add_argument('--timeframe', required=False)
+    ap.add_argument('--limit', type=int, default=200)
+    ap.add_argument('--pairs', nargs='*')
+    args = ap.parse_args()
+
+    cfg = Configuration.from_files([args.config])
+    # Apply timeframe override if provided
+    if args.timeframe:
+        cfg['timeframe'] = args.timeframe
+    tf = cfg.get('timeframe') or '5m'
+
+    # Derive pairs
+    pairs = []
+    if args.pairs:
+        pairs = args.pairs
+    elif isinstance(cfg.get('pairs'), list):
+        pairs = cfg.get('pairs') or []
+    elif isinstance(cfg.get('pair_whitelist'), list):
+        pairs = cfg.get('pair_whitelist') or []
+
+    # Load strategy and prepare DP
+    strategy = StrategyResolver.load_strategy(cfg)
+    strategy.dp = DataProvider(cfg, None, None)
+    try:
+        strategy.ft_bot_start()
+    except Exception:
+        pass
+
+    datadir = cfg.get('datadir')
+    out_series = []
+    base_cols = {'date','open','high','low','close','volume'}
+    for pair in pairs:
+        candles = load_pair_history(
+            datadir=datadir,
+            timeframe=tf,
+            pair=pair,
+            data_format='json',
+            candle_type=CandleType.SPOT,
+        )
+        if args.limit and args.limit > 0:
+            candles = candles.tail(args.limit)
+        df = strategy.analyze_ticker(candles, {'pair': pair})
+        # Serialize candles
+        try:
+            cd = [
+                {
+                    'date': str(df.loc[i, 'date']),
+                    'open': float(df.loc[i, 'open']),
+                    'high': float(df.loc[i, 'high']),
+                    'low': float(df.loc[i, 'low']),
+                    'close': float(df.loc[i, 'close']),
+                    'volume': float(df.loc[i, 'volume']),
+                }
+                for i in range(len(df))
+            ]
+        except Exception:
+            cd = []
+        # Indicators and signals
+        indicators = {}
+        signals = {}
+        for col in df.columns:
+            if col in base_cols:
+                continue
+            if col in ('buy','sell','enter_long','exit_long'):
+                try:
+                    signals[col] = [bool(v) if v in (0,1,True,False) else False for v in df[col].tolist()]
+                except Exception:
+                    pass
+            else:
+                vals = []
+                for v in df[col].tolist():
+                    try:
+                        vals.append(None if v is None else float(v))
+                    except Exception:
+                        vals.append(None)
+                indicators[col] = vals
+        out_series.append({'pair': pair, 'timeframe': tf, 'candles': cd, 'indicators': indicators, 'signals': signals})
+    res = {'pairs': pairs, 'timeframes': [tf], 'series': out_series}
+    print(json.dumps(res))
+
+if __name__ == '__main__':
+    main()
+'''
+    try:
+        script_path.write_text(script, encoding="utf-8")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write analytics script: {e}")
+
+    # Build docker run command
+    file_path = Path(__file__).resolve()
+    try:
+        repo_root = file_path.parents[3]
+    except Exception:
+        repo_root = file_path.parent
+    # Extra strategies mount (if available)
+    extra_strategy_dir = user_root / "user" / "strategies" / "variants"
+    if not extra_strategy_dir.exists():
+        extra_strategy_dir = user_root / "user" / "strategies"
+
+    image = _get_freqtrade_image()
+    # Best-effort ensure image is present
+    _docker_image_ensure(image, bot_userdir / "logs" / "analytics.out.log")
+
+    volumes = [
+        f"{str(bot_userdir)}:/freqtrade/user_data",
+        f"{str(repo_root)}:/repo",
+    ]
+    docker_py_path = "/freqtrade/user_data:/repo"
+    if extra_strategy_dir and extra_strategy_dir.exists():
+        volumes.append(f"{str(extra_strategy_dir)}:/freqtrade/extra_strategies")
+        docker_py_path += ":/freqtrade/extra_strategies"
+
+    cmd = [
+        "docker", "run", "--rm",
+    ]
+    for v in volumes:
+        cmd += ["-v", v]
+    cmd += ["-e", f"PYTHONPATH={docker_py_path}"]
+    cmd += [
+        image,
+        "python", "/freqtrade/user_data/analytics/collect_snapshot.py",
+        "--config", "/freqtrade/user_data/configs/config.generated.json",
+    ]
+    if timeframe:
+        cmd += ["--timeframe", timeframe]
+    if limit:
+        cmd += ["--limit", str(limit)]
+    if pairs:
+        cmd += ["--pairs", *pairs]
+
+    # Execute and capture output
+    try:
+        proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, cwd=str(bot_userdir))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to run analytics container: {e}")
+    if proc.returncode != 0:
+        # Include last part of stderr for debugging
+        err = proc.stderr.splitlines()[-20:]
+        raise HTTPException(status_code=502, detail={"error": "container failed", "stderr": "\n".join(err)})
+    try:
+        return json.loads(proc.stdout)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Invalid JSON from analytics container: {e}")

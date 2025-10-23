@@ -1,0 +1,175 @@
+<html>
+<head>
+<title>Title of the document</title>
+</head>
+
+<body>
+
+Auth
+POST /auth/login
+Body: form (application/x-www-form-urlencoded)
+username: string (email)
+password: string
+Response: Token
+{ access_token: string, token_type: "bearer" }
+Notes: Use Authorization: Bearer <access_token> for all other endpoints.
+Users
+POST /users
+Body: UserCreate
+{ email, password, workspace_root? | workspace_name? }
+Response: UserRead
+GET /users
+Response: UserRead[]
+PUT /users/{user_id}
+Body: { workspace_root?: string }
+Response: UserRead
+GET /users/{user_id}/config
+Response: meta config object
+PUT /users/{user_id}/config
+Body: MetaUpdateRequest
+{ meta: object }
+Response: saved meta
+User Strategy Utilities
+GET /users/{user_id}/strategies
+Response: string[] (strategy names)
+POST /users/{user_id}/strategies
+Body: { class_name: string, filename?: string }
+Response: { path: string }
+Legacy single-bot controls (prefer per-bot routes below)
+POST /users/{user_id}/bot/start
+POST /users/{user_id}/bot/stop
+GET /users/{user_id}/bot/status
+Strategies (current-user convenience)
+GET /strategies
+Response: string[] (strategy names in current user’s workspace)
+POST /strategies
+Body: { class_name: string, filename?: string }
+Response: { path: string }
+Config (focused config endpoints)
+GET /config/meta
+Response: meta object
+PUT /config/meta
+Body: { meta: object }
+Response: saved meta
+User account config
+GET /config/user
+Response: user account config
+PATCH /config/user
+Body: UserConfigPatch
+{ exchange?: object }
+Response: updated config
+POST /config/user/reset
+Response: reset config
+GET /config/user/exchange
+Response: exchange section (object)
+PUT /config/user/exchange
+Body: ExchangeConfig
+Response: updated config (exchange section)
+Bot config CRUD
+GET /config/bot/{bot_id}
+Response: bot config (object)
+PATCH /config/bot/{bot_id}
+Body: BotConfigPatch
+keys like pair_whitelist, stake_currency, timeframe, minimal_roi, stoploss, dry_run, mode, meta
+Response: updated config (object)
+POST /config/bot/{bot_id}/reset
+Response: reset bot config (object)
+GET /config/validate/{bot_id}
+Response: validation result (object)
+Bot trading controls
+GET /config/bot/{bot_id}/trading-controls
+Response: BotTradingControls
+PUT /config/bot/{bot_id}/trading-controls
+Body: BotTradingControls
+Response: subset of controls (normalized)
+Bot pricing
+GET /config/bot/{bot_id}/pricing
+Response: BotPricingUpdate
+{ entry_pricing, exit_pricing }
+PUT /config/bot/{bot_id}/pricing
+Body: BotPricingUpdate
+Response: { entry_pricing, exit_pricing }
+Bot trading mode
+PATCH /config/bot/{bot_id}/trading-mode
+Body: BotTradingModeUpdate
+{ trading_mode: "spot" | "futures" }
+Response: { trading_mode: string }
+Bots (per-bot lifecycle and management)
+GET /users/{user_id}/bots
+Response: BotRead[]
+POST /users/{user_id}/bots
+Body: BotCreate
+{ name, mode?, active_strategy?: { name? | clazz? } }
+Response: BotRead
+DELETE /users/{user_id}/bots/{bot_id}
+Response: { status: "deleted" }
+PATCH /users/{user_id}/bots/{bot_id}/mode
+Body: BotModeUpdate
+{ mode: string } // "live" | "dryrun" | "backstage"
+Response: BotRead
+PATCH /users/{user_id}/bots/{bot_id}/strategy
+Body: BotStrategyUpdate
+{ active_strategy: { name? | clazz? } }
+Response: BotRead // active_strategy normalized to dict
+Bot runtime operations
+POST /users/{user_id}/bots/{bot_id}/start
+Response: { status, pid, config }
+Notes: Starts Dockerized Freqtrade; starts analytics collector
+POST /users/{user_id}/bots/{bot_id}/stop
+Response: { status }
+Notes: Stops container; stops analytics collector
+GET /users/{user_id}/bots/{bot_id}/status
+Response: object (container and process status)
+GET /users/{user_id}/bots/{bot_id}/runtime
+Response: RuntimeInfo
+{ runtime: "docker", container_name, api_host, api_port, api_base, running, config_path }
+POST /users/{user_id}/bots/{bot_id}/backtest
+Body: BacktestStartRequest
+{ timerange?, strategy?, export?: "none"|"trades", export_filename? }
+Response: { status, pid, config }
+POST /users/{user_id}/bots/{bot_id}/data/download?timerange=STRING
+Query: timerange (e.g., 20240101-20241231 or -365d)
+Response: object (download job result)
+GET /users/{user_id}/bots/{bot_id}/balance
+Response: object (proxied Freqtrade /balance)
+Freqtrade REST proxy
+[GET|POST|DELETE|PUT|PATCH|HEAD|OPTIONS] /users/{user_id}/bots/{bot_id}/proxy/freqtrade/{full_path}
+Forwards to bot’s Freqtrade at /api/v1/{full_path}
+Query: forwarded
+Body: JSON or raw body forwarded; Content-Type preserved
+Response: JSON or text (depending on upstream)
+Analytics
+GET /users/{user_id}/bots/{bot_id}/analytics/snapshot?limit=200
+Response: object with:
+candles+indicators+signals per pair/timeframe (last N rows)
+open_trades, open_orders, balance, profit/performance aggregates
+Notes: Uses in-memory cache if collector running; otherwise computes on-demand
+GET /users/{user_id}/bots/{bot_id}/analytics/candles?pair=PAIR&timeframe=TF&limit=200
+Response: candles (proxied from Freqtrade)
+GET /users/{user_id}/bots/{bot_id}/analytics/snapshot/parity?timeframe=TF&limit=200
+Response: JSON snapshot computed inside the Freqtrade container using StrategyResolver/DataProvider (full fidelity)
+WS /users/{user_id}/bots/{bot_id}/analytics/ws
+Server-to-client push of incremental analytics (candles, indicators, signals)
+Keepalive: client should periodically send a small text ping; server ignores content
+Auth: token-based WS auth not wired yet (designed for internal use)
+Models (selected)
+Token: { access_token: string, token_type: "bearer" }
+UserCreate: { email, password, workspace_root? | workspace_name? }
+UserRead: { id, email, workspace_root }
+BotCreate: { name, mode?, active_strategy?: { name? | clazz? } }
+BotRead: { id, name, userdir, status, pid?, config_path?, mode?, active_strategy?: object }
+BotModeUpdate: { mode: string }
+ActiveStrategySpec: { name?: string, clazz?: string }
+BotStrategyUpdate: { active_strategy: ActiveStrategySpec }
+BacktestStartRequest: { timerange?: string, strategy?: string, export?: "none"|"trades", export_filename?: string }
+RuntimeInfo: { runtime: "docker", container_name?, api_host?, api_port?, api_base?, running?, config_path? }
+UserConfigPatch: { exchange?: object }
+ExchangeConfig: keys like name, key, secret, password, uid, sandbox, ccxt_*…
+BotConfigPatch: keys like pair_whitelist, stake_currency, timeframe, minimal_roi, stoploss, dry_run, mode, meta
+BotTradingControls: stake_currency, stake_amount, max_open_trades, … trading_mode, margin_mode?, liquidation_buffer?
+BotPricingUpdate: { entry_pricing: PricingConfig, exit_pricing: PricingConfig }
+BotTradingModeUpdate: { trading_mode: "spot" | "futures" }
+
+</body>
+
+</html>

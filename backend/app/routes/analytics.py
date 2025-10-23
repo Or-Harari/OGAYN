@@ -51,6 +51,18 @@ def analytics_candles(user_id: int, bot_id: int, pair: str, timeframe: str, limi
     return svc.fetch_candles(bot, pair=pair, timeframe=timeframe, limit=limit)
 
 
+@router.get("/{user_id}/bots/{bot_id}/analytics/snapshot/parity")
+def analytics_snapshot_parity(user_id: int, bot_id: int, timeframe: str | None = None, limit: int = 200, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    # Use parity snapshot inside docker for maximum strategy fidelity
+    return svc.parity_snapshot(db, user, bot, timeframe=timeframe, limit=limit)
+
+
 @router.websocket("/{user_id}/bots/{bot_id}/analytics/ws")
 async def analytics_ws(websocket: WebSocket, user_id: int, bot_id: int, db: Session = Depends(get_db)):
     # Note: WebSocket auth can be added via token query param or cookie; skipped for internal tooling.

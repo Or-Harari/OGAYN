@@ -61,3 +61,12 @@ workspaces/**/user_data/configs/config.generated.sources.json
 
 # IDE
 .idea/
+
+# App data and user workspaces (do not version control test users/configs/strategies)
+workspaces/**
+
+# Backend local database
+backend/data/*.db
+
+# TypeScript incremental build info
+**/tsconfig.tsbuildinfo

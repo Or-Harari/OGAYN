@@ -12,19 +12,23 @@ from pathlib import Path as _PathAlias  # for template clarity
 
 
 def _default_strategies_dir(workspace_root: str) -> Path:
-    # user_data/strategies/_strategies
-    return Path(workspace_root) / "strategies" / "_strategies"
+    """Unified user strategies directory.
+
+    We standardize on <user_workspace_root>/strategies as the single source of truth
+    for authoring and discovery.
+    """
+    return Path(workspace_root) / "strategies"
 
 
 def _strategy_paths(workspace_root: str) -> list[str]:
     base = Path(workspace_root)
+    # Primary unified source
     paths = [str(_default_strategies_dir(workspace_root))]
     try:
         meta = load_meta_config(workspace_root)
         extras = meta.get("strategy_paths") or []
-        user_base = base  # user_data
         for p in extras:
-            abs_p = p if os.path.isabs(p) else str((user_base / p).resolve())
+            abs_p = p if os.path.isabs(p) else str((base / p).resolve())
             paths.append(abs_p)
     except Exception:
         pass
@@ -70,12 +74,17 @@ def _scan_dir_for_strategies(path: str, registry: Dict[str, str]) -> None:
     # Try both the strategies dir root and the repo-level user_data/strategies for shared helpers
     extra_paths = set()
     try:
-        # path: .../strategies/_strategies or any directory inside
-        strategies_root = p.parent if p.name == "_strategies" else p
+        # path: unified strategies directory or any directory inside
+        strategies_root = p
         extra_paths.add(str(strategies_root))
         # project root heuristic: backend/app/services/.. -> project root at parents[3]
         project_root = Path(__file__).resolve().parents[3]
+        # Ensure repo root is available so imports like 'backend.app.*' resolve
+        extra_paths.add(str(project_root))
+        # Legacy helper path for older layouts
         extra_paths.add(str(project_root / "user_data" / "strategies"))
+        # Also add the backend package path explicitly (defensive)
+        extra_paths.add(str(project_root / "backend"))
     except Exception:
         pass
 
@@ -164,7 +173,8 @@ def create_strategy_file(class_name: str, filename: str | None, workspace_root: 
 
     Writes file under strategies/variants/ to distinguish from auto-discovered _strategies legacy dir.
     """
-    base_dir = Path(workspace_root) / "strategies" / "variants"
+    # Unified authoring location
+    base_dir = Path(workspace_root) / "strategies"
     base_dir.mkdir(parents=True, exist_ok=True)
     init_path = base_dir / "__init__.py"
     if not init_path.exists():

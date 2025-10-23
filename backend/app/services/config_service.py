@@ -326,62 +326,38 @@ def compose_bot_config(user_workspace_root: str, bot_user_data_root: str, mode: 
                 clazz = clazz[:-3]
             if clazz:
                 cfg["strategy"] = clazz
-    # 6. strategy_path resolution (so Freqtrade can find strategies outside user_data/strategies)
-    strategy_paths: List[str] = []
-    # default bot-local strategies directory
-    bot_strategies = bot_root / "strategies"
-    strategy_paths.append(str(bot_strategies))
-    # common user workspace strategies directory (workspaces/<user>/user/strategies)
-    user_strategies = user_root / "user" / "strategies"
-    if user_strategies.exists():
-        strategy_paths.append(str(user_strategies))
-    # meta-declared strategy paths (resolve relative to user_root)
-    for sp in meta.get("strategy_paths", []) or []:
+    # 6. strategy_path resolution - unify to <user_workspace_root>/strategies
+    # If only a name was provided, use it as the concrete class name
+    if isinstance(active_strategy, dict):
         try:
-            p = Path(sp)
-            if not p.is_absolute():
-                p = (user_root / sp).resolve()
-            strategy_paths.append(str(p))
+            current_strategy = cfg.get("strategy")
+            # Treat placeholder and empty values as unset, so name can override
+            if (current_strategy in {None, "", "__SET_YOUR_STRATEGY__"}) and active_strategy.get("name"):
+                cfg["strategy"] = active_strategy.get("name")
         except Exception:
-            continue
-    # de-duplicate while preserving order
-    seen: set[str] = set()
-    dedup_paths = [x for x in strategy_paths if not (x in seen or seen.add(x))]
-    # Prefer a path that actually contains the strategy file if strategy name is known
-    chosen_path = None
-    strategy_name = None
+            pass
+    unified_dir_candidates = [
+        user_root / "strategies",
+        user_root / "user" / "strategies",  # fallback for older code paths
+    ]
+    unified_dir = next((p for p in unified_dir_candidates if p.exists()), unified_dir_candidates[0])
+    chosen_path: str | None = None
+    # Attempt to locate the concrete strategy file under the unified dir
     try:
-        strategy_name = (active_strategy.get("clazz") if isinstance(active_strategy, dict) else None) or cfg.get("strategy")
-    except Exception:
         strategy_name = cfg.get("strategy")
-    if isinstance(strategy_name, str) and strategy_name:
-        target = f"{strategy_name}.py"
-        for base in dedup_paths:
-            try:
-                basep = Path(base)
-                if basep.exists():
-                    # recursive search
-                    for cand in basep.rglob(target):
-                        chosen_path = str(cand.parent)
-                        break
-                if chosen_path:
+        if isinstance(strategy_name, str) and strategy_name:
+            target = f"{strategy_name}.py"
+            basep = Path(unified_dir)
+            if basep.exists():
+                for cand in basep.rglob(target):
+                    chosen_path = str(cand.parent)
                     break
-            except Exception:
-                continue
-    # Fallback: first existing directory
+    except Exception:
+        chosen_path = None
+    # Fallback to unified dir itself
     if not chosen_path:
-        for p in dedup_paths:
-            try:
-                if Path(p).exists():
-                    chosen_path = p
-                    break
-            except Exception:
-                continue
-    # Final fallback: first candidate
-    if not chosen_path and dedup_paths:
-        chosen_path = dedup_paths[0]
-    if chosen_path:
-        cfg["strategy_path"] = chosen_path
+        chosen_path = str(unified_dir)
+    cfg["strategy_path"] = chosen_path
 
     # 7. finalize & write
     out_path = bot_configs_dir / "config.generated.json"
@@ -390,6 +366,20 @@ def compose_bot_config(user_workspace_root: str, bot_user_data_root: str, mode: 
 
 def _finalize_and_write_cfg(cfg: Dict[str, Any], meta: Dict[str, Any], out_path: Path, sources: List[Tuple[str, Path]]):
     # Ensure strategy
+    # If placeholder is present, attempt to derive from meta.active_strategy first
+    try:
+        if cfg.get("strategy") in {None, "", "__SET_YOUR_STRATEGY__"}:
+            aname = None
+            if isinstance(meta, dict):
+                act = meta.get("active_strategy") or {}
+                # Prefer name, then clazz
+                aname = act.get("name") or act.get("clazz")
+                if isinstance(aname, str) and aname.lower().endswith(".py"):
+                    aname = aname[:-3]
+            if aname:
+                cfg["strategy"] = aname
+    except Exception:
+        pass
     # Leave strategy unset by default; bots must specify a concrete strategy class name
     cfg.setdefault("strategy", cfg.get("strategy", "__SET_YOUR_STRATEGY__"))
     # Ensure initial_state default if still missing after layering
@@ -411,7 +401,8 @@ def _finalize_and_write_cfg(cfg: Dict[str, Any], meta: Dict[str, Any], out_path:
     if not api.get("enabled"):
         cfg["api_server"] = {
             "enabled": True,
-            "listen_ip_address": "127.0.0.1",
+            # Inside docker, Freqtrade webserver must listen on 0.0.0.0 to accept connections via port publishing
+            "listen_ip_address": "0.0.0.0",
             "listen_port": _pick_free_port(),
             "verbosity": "error",
             "enable_openapi": False,
@@ -423,7 +414,7 @@ def _finalize_and_write_cfg(cfg: Dict[str, Any], meta: Dict[str, Any], out_path:
         }
     else:
         # Ensure port and host defaults
-        api.setdefault("listen_ip_address", "127.0.0.1")
+        api.setdefault("listen_ip_address", "0.0.0.0")
         api.setdefault("listen_port", _pick_free_port())
         api.setdefault("verbosity", "error")
         api.setdefault("enable_openapi", False)

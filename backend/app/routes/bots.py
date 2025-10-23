@@ -10,9 +10,10 @@ from ..schemas import (
     BotRead,
     BotModeUpdate,
     BotStrategyUpdate,
+    BotConfigPatch,
 )
 from ..services.workspace_service import create_bot_workspace
-from ..services.bot_service import start_bot, stop_bot, bot_status as bot_status_service, start_backtest, proxy_freqtrade_api, download_data, get_runtime_info
+from ..services.bot_service import start_bot, stop_bot, bot_status as bot_status_service, start_backtest, proxy_freqtrade_api, download_data, get_runtime_info, get_trades_history
 from ..services import analytics_runtime as rt
 from ..schemas import BacktestStartRequest, RuntimeInfo
 
@@ -68,6 +69,57 @@ def delete_bot(user_id: int, bot_id: int, current=Depends(get_current_user), db:
     return {"status": "deleted"}
 
 
+@router.patch("/{user_id}/bots/{bot_id}/config")
+def update_bot_config(user_id: int, bot_id: int, req: BotConfigPatch, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Patch non-strategy bot configuration into bot.json.
+
+    Allowed keys: pair_whitelist, stake_currency, stake_amount, dry_run, meta
+    Strategy-owned keys (roi, timeframe, stoploss, etc.) are ignored here and must be set in the strategy.
+    """
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+
+    from pathlib import Path as _Path
+    import json as _json
+    bot_userdir = _Path(bot.userdir)
+    cfg_dir = bot_userdir / "configs"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    bot_cfg_path = cfg_dir / "bot.json"
+    try:
+        current_cfg = {}
+        if bot_cfg_path.exists():
+            with bot_cfg_path.open("r", encoding="utf-8") as f:
+                current_cfg = _json.load(f) or {}
+    except Exception:
+        current_cfg = {}
+
+    # Apply only allowed fields
+    payload = req.dict(exclude_none=True)
+    allowed = {"pair_whitelist", "stake_currency", "stake_amount", "dry_run", "meta", "trading_mode", "margin_mode", "liquidation_buffer"}
+    for k in list(payload.keys()):
+        if k not in allowed:
+            payload.pop(k, None)
+    # Normalize pair_whitelist from input
+    if "pair_whitelist" in payload and payload["pair_whitelist"] is not None:
+        if not isinstance(payload["pair_whitelist"], list):
+            raise HTTPException(status_code=422, detail="pair_whitelist must be a list of symbols")
+        payload["pair_whitelist"] = [str(x).upper() for x in payload["pair_whitelist"] if str(x).strip()]
+
+    # Merge and write
+    new_cfg = {**current_cfg, **payload}
+    try:
+        with bot_cfg_path.open("w", encoding="utf-8") as f:
+            _json.dump(new_cfg, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write bot config: {e}")
+
+    return new_cfg
+
+
 @router.post("/{user_id}/bots/{bot_id}/start")
 def start_bot_route(user_id: int, bot_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
     user = _get_user(db, user_id)
@@ -108,6 +160,9 @@ def stop_bot_route(user_id: int, bot_id: int, current=Depends(get_current_user),
     except Exception:
         pass
     return {"status": bot.status}
+
+
+## start-api-only endpoint removed per revised design
 
 
 @router.get("/{user_id}/bots/{bot_id}/balance")
@@ -227,6 +282,28 @@ def bot_runtime_route(user_id: int, bot_id: int, current=Depends(get_current_use
         raise HTTPException(status_code=404, detail="Bot not found")
     info = get_runtime_info(db, user, bot)
     return info
+
+
+@router.get("/{user_id}/bots/{bot_id}/trades-history")
+def bot_trades_history_route(user_id: int, bot_id: int, mode: str | None = None, limit: int | None = None, current=Depends(get_current_user), db: Session = Depends(get_db)):
+        """Return historical trades for a bot from its local SQLite DBs.
+
+        Params:
+            - mode: 'live' | 'dryrun' | 'all' (default 'all')
+            - limit: optional max rows per DB (applied per selected DB)
+
+        Notes:
+            - Does not require the bot to be running.
+            - Reads tradesv3.sqlite and/or tradesv3.dryrun.sqlite inside the bot's user_data.
+        """
+        user = _get_user(db, user_id)
+        if current.id != user.id:
+                raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+        bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+        if not bot:
+                raise HTTPException(status_code=404, detail="Bot not found")
+        rows = get_trades_history(user, bot, mode=mode, limit=limit)
+        return rows
 
 
 @router.patch("/{user_id}/bots/{bot_id}/mode", response_model=BotRead)
