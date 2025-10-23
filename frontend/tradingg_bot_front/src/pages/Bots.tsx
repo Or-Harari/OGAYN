@@ -5,6 +5,7 @@ import { api } from '@/lib/api'
 import CreateBotForm, { CreateBotFormValues } from '@/components/CreateBotForm'
 import { useUI } from '@/stores/ui'
 import './Bots.css'
+import LiveAnalyticsChart from '@/components/chart/LiveAnalyticsChart'
 
 type BotStatusPayload = {
   status: string
@@ -502,6 +503,13 @@ export function Bots() {
                   </button>
                 </div>
               </div>
+              {/* Analytics */}
+              {details[selected.id]?.runtime?.running ? (
+                <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #e5e7eb' }}>
+                  <h4 style={{ margin: '0 0 8px 0' }}>Analytics</h4>
+                  <LiveAnalyticsChart userId={userId as number} botId={selected.id} />
+                </div>
+              ) : null}
               {/* Errors / Loading */}
               {details[selected.id]?.status?.last_error && (
                 <div style={{ marginTop: 8, color: '#dc2626' }}>
