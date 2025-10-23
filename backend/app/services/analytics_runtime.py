@@ -40,9 +40,11 @@ class SeriesData:
 
 
 class AnalyticsCollector:
-    def __init__(self, user: User, bot: Bot, limit: int = 200) -> None:
-        self.user = user
-        self.bot = bot
+    def __init__(self, *, user_workspace_root: str, bot_userdir: str, bot_id: int, limit: int = 200) -> None:
+        # Store only scalars/paths to avoid DetachedInstanceError outside DB sessions
+        self.user_root = Path(user_workspace_root).resolve()
+        self.bot_userdir = Path(bot_userdir).resolve()
+        self.bot_id = bot_id
         self.limit = limit
         self._task: Optional[asyncio.Task] = None
         self._stopped = asyncio.Event()
@@ -55,7 +57,7 @@ class AnalyticsCollector:
         if self._task and not self._task.done():
             return
         self._stopped.clear()
-        self._task = asyncio.create_task(self._run(), name=f"collector-bot-{self.bot.id}")
+        self._task = asyncio.create_task(self._run(), name=f"collector-bot-{self.bot_id}")
 
     async def stop(self) -> None:
         self._stopped.set()
@@ -66,9 +68,9 @@ class AnalyticsCollector:
                 pass
 
     async def _load_pairs_timeframes(self) -> None:
-        # Read config directly from disk
-        user_root = Path(self.user.workspace_root).resolve()
-        bot_userdir = Path(self.bot.userdir).resolve()
+        # Read config directly from disk using stored paths
+        user_root = self.user_root
+        bot_userdir = self.bot_userdir
         cfg_path = svc._read_bot_config_path(bot_userdir)
         cfg: dict = {}
         if cfg_path:
@@ -113,18 +115,24 @@ class AnalyticsCollector:
 
     async def _tick(self) -> None:
         # Recompute all series (simple and robust for v1)
-        user_root = Path(self.user.workspace_root).resolve()
-        bot_userdir = Path(self.bot.userdir).resolve()
+        user_root = self.user_root
+        bot_userdir = self.bot_userdir
         cfg_path = svc._read_bot_config_path(bot_userdir)
         cfg: dict = {}
         if cfg_path:
             cfg = svc._load_config(cfg_path)
         strategy_cls, _ = svc._import_strategy(user_root, bot_userdir, cfg)
+        # Minimal Bot-like proxy with id and config_path for Freqtrade API proxy
+        class _BotProxy:
+            def __init__(self, bid: int, cfg: Optional[Path]):
+                self.id = bid
+                self.config_path = str(cfg) if cfg else None
+        bot_proxy = _BotProxy(self.bot_id, cfg_path)
         updates: list[SeriesData] = []
         for pair in self._pairs:
             for tf in self._tfs:
                 try:
-                    candles = svc.fetch_candles(self.bot, pair, tf, limit=self.limit)
+                    candles = svc.fetch_candles(bot_proxy, pair, tf, limit=self.limit)
                     df, _err = svc._df_from_candles(candles)
                     indicators: dict[str, list] = {}
                     signals: dict[str, list] = {}
@@ -157,7 +165,7 @@ class AnalyticsCollector:
         async with self._cache_lock:
             for sd in updates:
                 self._series[(sd.pair, sd.timeframe)] = sd
-        await broadcast_updates(self.bot.id, updates)
+        await broadcast_updates(self.bot_id, updates)
 
     async def snapshot(self) -> dict:
         async with self._cache_lock:
@@ -188,7 +196,8 @@ def get_or_create_collector(user: User, bot: Bot) -> AnalyticsCollector:
     c = _collectors.get(bot.id)
     if c:
         return c
-    c = AnalyticsCollector(user, bot)
+    # Capture scalar fields only to avoid detached ORM access in background task
+    c = AnalyticsCollector(user_workspace_root=user.workspace_root, bot_userdir=bot.userdir, bot_id=bot.id)
     _collectors[bot.id] = c
     return c
 

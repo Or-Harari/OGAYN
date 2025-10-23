@@ -1,9 +1,9 @@
 import * as React from 'react'
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { createChart, IChartApi, UTCTimestamp } from 'lightweight-charts'
 import { API_BASE, api } from '@/lib/api'
 
-type CandleRow = { date: string; open: number; high: number; low: number; close: number }
+type CandleRow = { date: string | number; open: number; high: number; low: number; close: number }
 
 function toWsUrl(httpBase: string): string {
   try {
@@ -11,10 +11,32 @@ function toWsUrl(httpBase: string): string {
     u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:'
     return u.origin
   } catch {
-    // Fallback to current location
     const proto = location.protocol === 'https:' ? 'wss://' : 'ws://'
-    const host = location.host
-    return proto + host
+    return proto + location.host
+  }
+}
+
+function normalizeCandles(input: any): CandleRow[] {
+  try {
+    let rows = input
+    if (rows && typeof rows === 'object' && 'data' in rows) rows = rows.data
+    if (!Array.isArray(rows)) return []
+    if (rows.length === 0) return []
+    if (typeof rows[0] === 'object' && !Array.isArray(rows[0])) {
+      return rows.map((r: any) => ({
+        date: typeof r.date === 'number' ? (r.date > 1e12 ? r.date : r.date * 1000) : r.date,
+        open: Number(r.open), high: Number(r.high), low: Number(r.low), close: Number(r.close),
+      }))
+    }
+    if (Array.isArray(rows[0])) {
+      return rows.map((r: any[]) => ({
+        date: (r[0] > 1e12 ? r[0] : r[0] * 1000),
+        open: Number(r[1]), high: Number(r[2]), low: Number(r[3]), close: Number(r[4]),
+      }))
+    }
+    return []
+  } catch {
+    return []
   }
 }
 
@@ -22,148 +44,92 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
   const seriesRef = useRef<ReturnType<IChartApi['addCandlestickSeries']> | null>(null)
-  const [pair, setPair] = useState<string | null>(null)
-  const [timeframe, setTimeframe] = useState<string | null>(null)
+  const [pairs, setPairs] = useState<string[]>([])
+  const [timeframes, setTimeframes] = useState<string[]>([])
+  const [selectedPair, setSelectedPair] = useState<string | null>(null)
+  const [selectedTf, setSelectedTf] = useState<string | null>(null)
   const [noData, setNoData] = useState<boolean>(false)
-  const [note, setNote] = useState<string>('')
+  const [note, setNote] = useState<string>("")
 
   useEffect(() => {
     if (!wrapRef.current) return
     const chart = createChart(wrapRef.current, { height: 420 })
+    chart.applyOptions({ watermark: { visible: false } as any })
     const series = chart.addCandlestickSeries()
     chartRef.current = chart
     seriesRef.current = series
+    return () => { chart.remove() }
+  }, [])
 
-    let ws: WebSocket | null = null
-    let reconnectTimer: any
+  const setSeriesData = (candlesIn: any) => {
+    if (!seriesRef.current) return
+    const candles = normalizeCandles(candlesIn)
+    const data = candles.map((c) => ({
+      time: Math.floor((typeof c.date === 'number' ? c.date : new Date(c.date).getTime()) / 1000) as UTCTimestamp,
+      open: c.open, high: c.high, low: c.low, close: c.close,
+    }))
+    seriesRef.current.setData(data)
+  }
 
-    const normalizeCandles = (input: any): CandleRow[] => {
-      try {
-        let rows = input
-        if (rows && typeof rows === 'object' && 'data' in rows) rows = rows.data
-        if (!Array.isArray(rows)) return []
-        if (rows.length === 0) return []
-        // Case 1: already objects with ohlc
-        if (typeof rows[0] === 'object' && !Array.isArray(rows[0])) {
-          return rows.map((r: any) => ({
-            date: typeof r.date === 'number' ? new Date(r.date > 1e12 ? r.date : r.date * 1000).toISOString() : String(r.date),
-            open: Number(r.open), high: Number(r.high), low: Number(r.low), close: Number(r.close),
-          }))
-        }
-        // Case 2: arrays [ts, open, high, low, close, volume]
-        if (Array.isArray(rows[0])) {
-          return rows.map((r: any[]) => ({
-            date: new Date((r[0] > 1e12 ? r[0] : r[0] * 1000)).toISOString(),
-            open: Number(r[1]), high: Number(r[2]), low: Number(r[3]), close: Number(r[4]),
-          }))
-        }
-        return []
-      } catch {
-        return []
-      }
-    }
-
-    const setSeriesData = (candlesIn: any) => {
-      if (!seriesRef.current) return
-      const candles: CandleRow[] = normalizeCandles(candlesIn)
-      const data = candles.map((c) => ({
-        time: Math.floor(new Date(c.date).getTime() / 1000) as UTCTimestamp,
-        open: c.open, high: c.high, low: c.low, close: c.close,
-      }))
-      seriesRef.current.setData(data)
-    }
-    const setTradeMarkers = (snap: any) => {
-      try {
-        if (!seriesRef.current) return
-        const trades = Array.isArray(snap?.trades) ? snap.trades : []
-        const selPair = pair || (Array.isArray(snap?.pairs) ? snap.pairs[0] : null)
-        const markers: any[] = []
-        trades.filter((t: any) => !selPair || t.pair === selPair).forEach((t: any) => {
-          const openTs = t.open_date || t.open_timestamp || t.open_time
-          const closeTs = t.close_date || t.close_timestamp || t.close_time
-          if (openTs) {
-            const time = Math.floor(new Date(openTs).getTime() / 1000) as UTCTimestamp
-            markers.push({ time, position: 'belowBar', color: '#16a34a', shape: 'arrowUp', text: 'BUY' })
-          }
-          if (closeTs) {
-            const time = Math.floor(new Date(closeTs).getTime() / 1000) as UTCTimestamp
-            markers.push({ time, position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: 'SELL' })
-          }
-        })
-        if (markers.length) seriesRef.current.setMarkers(markers)
-      } catch {}
-    }
-
-    // Helper: probe alternative timeframes when snapshot series is empty
-    const probeTimeframes = async (pairs: string[] | undefined) => {
-      const candidates = ['1m', '3m', '5m', '15m']
-      const selPair = (pairs && pairs[0]) || pair
-      if (!selPair) return false
-      for (const tf of candidates) {
-        try {
-          const res = await api.get(`/users/${userId}/bots/${botId}/analytics/candles`, { params: { pair: selPair, timeframe: tf, limit: 200 } })
-          const rows = res.data
-          const normalized = normalizeCandles(rows)
-          if (normalized.length > 0) {
-            setPair(selPair)
-            setTimeframe(tf)
-            setSeriesData(normalized)
-            setNoData(false)
-            setNote(`Showing ${selPair} · ${tf} (fallback)`) 
-            return true
-          }
-        } catch { /* try next */ }
-      }
-      return false
-    }
-
+  useEffect(() => {
     // Initial snapshot
     api.get(`/users/${userId}/bots/${botId}/analytics/snapshot`, { params: { limit: 200 } })
       .then(res => {
         const snap = res.data
         const s = Array.isArray(snap?.series) ? snap.series : []
-        const first = s[0]
+        const ps: string[] = Array.isArray(snap?.pairs) ? snap.pairs : []
+        const tfs: string[] = Array.isArray(snap?.timeframes) ? snap.timeframes : []
+        setPairs(ps)
+        setTimeframes(tfs)
         const effTf = typeof snap?.effective_timeframe === 'string' ? snap.effective_timeframe : null
-        if (first) {
-          const useTf = effTf && effTf !== first.timeframe ? effTf : first.timeframe
-          const usePair = first.pair
-          // If effective timeframe differs from first series, fetch candles for it
-          if (effTf && effTf !== first.timeframe) {
-            api.get(`/users/${userId}/bots/${botId}/analytics/candles`, { params: { pair: usePair, timeframe: effTf, limit: 200 } })
-              .then(r2 => {
-                setPair(usePair)
-                setTimeframe(effTf)
-                setSeriesData(r2.data)
-                setTradeMarkers(snap)
-                setNoData(false)
-                setNote(`Showing ${usePair} · ${effTf} (runtime)`) 
-              })
-              .catch(() => {
-                // Fallback to first series
-                setPair(usePair)
-                setTimeframe(first.timeframe)
-                setSeriesData(first.candles || [])
-                setTradeMarkers(snap)
-                setNoData(false)
-              })
-          } else {
-            setPair(usePair)
-            setTimeframe(useTf)
-            setSeriesData(first.candles || [])
-            setTradeMarkers(snap)
-            setNoData(false)
-          }
+        const first = s[0]
+        const initPair = first?.pair || ps[0] || null
+        const initTf = effTf || first?.timeframe || tfs[0] || null
+        setSelectedPair(initPair)
+        setSelectedTf(initTf)
+        if (first?.candles && initPair === first.pair && initTf === (first.timeframe || initTf)) {
+          setSeriesData(first.candles)
+          setNoData(false)
+          setNote(initTf ? `${initPair} · ${initTf}` : '')
+        } else if (initPair && initTf) {
+          api.get(`/users/${userId}/bots/${botId}/analytics/candles`, { params: { pair: initPair, timeframe: initTf, limit: 200 } })
+            .then(r2 => { setSeriesData(r2.data); setNoData(false); setNote(`${initPair} · ${initTf}`) })
+            .catch(() => { setNoData(true); setNote('No candle data') })
         } else {
           setNoData(true)
-          // Probe alternative TFs (common runtime case: bot uses 1m but UI/default is 5m)
-          probeTimeframes(Array.isArray(snap?.pairs) ? snap.pairs : [])
+          setNote('No candle data')
         }
       })
       .catch(() => { /* ignore */ })
+  }, [userId, botId])
 
-    // Live updates (best-effort)
+  // React to selection changes
+  useEffect(() => {
+    let cancelled = false
+    const load = async () => {
+      if (!selectedPair || !selectedTf) return
+      try {
+        const r = await api.get(`/users/${userId}/bots/${botId}/analytics/candles`, { params: { pair: selectedPair, timeframe: selectedTf, limit: 200 } })
+        if (cancelled) return
+        setSeriesData(r.data)
+        setNoData(false)
+        setNote(`${selectedPair} · ${selectedTf}`)
+      } catch {
+        if (cancelled) return
+        setNoData(true)
+        setNote('No candle data')
+      }
+    }
+    load()
+    return () => { cancelled = true }
+  }, [selectedPair, selectedTf, userId, botId])
+
+  // Websocket for live updates; only apply if pair/tf matches selection
+  useEffect(() => {
     const base = toWsUrl(API_BASE)
     const wsUrl = `${base}/users/${userId}/bots/${botId}/analytics/ws`
+    let ws: WebSocket | null = null
+    let reconnectTimer: any
     const connect = () => {
       try {
         ws = new WebSocket(wsUrl)
@@ -175,42 +141,53 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
         try {
           const msg = JSON.parse(ev.data)
           if (msg?.type === 'series' && Array.isArray(msg.updates)) {
-            const p = pair
-            const tf = timeframe
-            // Prefer matching pair/timeframe; else use first update
-            let upd = msg.updates.find((u: any) => (!p || u.pair === p) && (!tf || u.timeframe === tf))
-            if (!upd && msg.updates.length > 0) upd = msg.updates[0]
+            const upd = msg.updates.find((u: any) => (!selectedPair || u.pair === selectedPair) && (!selectedTf || u.timeframe === selectedTf))
             if (upd && upd.candles) {
               setSeriesData(upd.candles)
-              if (!pair) setPair(upd.pair)
-              if (!timeframe) setTimeframe(upd.timeframe)
               setNoData(false)
             }
           }
-        } catch { /* ignore */ }
+        } catch {}
       }
-      ws.onclose = () => { reconnectTimer = setTimeout(connect, 1500) }
+      ws.onclose = () => { reconnectTimer = setTimeout(connect, 2500) }
       ws.onerror = () => { try { ws?.close() } catch {} }
     }
     connect()
+    return () => { try { ws?.close() } catch {}; clearTimeout(reconnectTimer) }
+  }, [userId, botId, selectedPair, selectedTf])
 
-    return () => {
-      try { ws?.close() } catch {}
-      clearTimeout(reconnectTimer)
-      chart.remove()
-    }
-  }, [userId, botId])
+  const PairTabs = useMemo(() => (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+      {pairs.map(p => (
+        <button key={p}
+          onClick={() => setSelectedPair(p)}
+          style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: selectedPair === p ? '#eef2ff' : '#fff', cursor: 'pointer' }}>
+          {p}
+        </button>
+      ))}
+    </div>
+  ), [pairs, selectedPair])
+
+  const TfTabs = useMemo(() => (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+      {timeframes.map(tf => (
+        <button key={tf}
+          onClick={() => setSelectedTf(tf)}
+          style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: selectedTf === tf ? '#eef2ff' : '#fff', cursor: 'pointer' }}>
+          {tf}
+        </button>
+      ))}
+    </div>
+  ), [timeframes, selectedTf])
 
   return (
     <div>
-      <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
-        {note || (pair && timeframe ? `${pair} · ${timeframe}` : 'Loading series…')}
-      </div>
+      <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>{note}</div>
+      {pairs.length > 1 && PairTabs}
+      {timeframes.length > 1 && TfTabs}
       <div ref={wrapRef} style={{ width: '100%', minHeight: 420 }} />
       {noData && (
-        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>
-          No candle data yet.
-        </div>
+        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>No candle data yet.</div>
       )}
     </div>
   )
