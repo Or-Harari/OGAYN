@@ -123,12 +123,36 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
         const snap = res.data
         const s = Array.isArray(snap?.series) ? snap.series : []
         const first = s[0]
+        const effTf = typeof snap?.effective_timeframe === 'string' ? snap.effective_timeframe : null
         if (first) {
-          setPair(first.pair)
-          setTimeframe(first.timeframe)
-          setSeriesData(first.candles || [])
-          setTradeMarkers(snap)
-          setNoData(false)
+          const useTf = effTf && effTf !== first.timeframe ? effTf : first.timeframe
+          const usePair = first.pair
+          // If effective timeframe differs from first series, fetch candles for it
+          if (effTf && effTf !== first.timeframe) {
+            api.get(`/users/${userId}/bots/${botId}/analytics/candles`, { params: { pair: usePair, timeframe: effTf, limit: 200 } })
+              .then(r2 => {
+                setPair(usePair)
+                setTimeframe(effTf)
+                setSeriesData(r2.data)
+                setTradeMarkers(snap)
+                setNoData(false)
+                setNote(`Showing ${usePair} · ${effTf} (runtime)`) 
+              })
+              .catch(() => {
+                // Fallback to first series
+                setPair(usePair)
+                setTimeframe(first.timeframe)
+                setSeriesData(first.candles || [])
+                setTradeMarkers(snap)
+                setNoData(false)
+              })
+          } else {
+            setPair(usePair)
+            setTimeframe(useTf)
+            setSeriesData(first.candles || [])
+            setTradeMarkers(snap)
+            setNoData(false)
+          }
         } else {
           setNoData(true)
           // Probe alternative TFs (common runtime case: bot uses 1m but UI/default is 5m)

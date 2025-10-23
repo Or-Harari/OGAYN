@@ -298,6 +298,13 @@ def snapshot(db: Session, user: User, bot: Bot, limit: int = 200) -> dict:
     balance = _get("/balance")
     profit = _get("/profit")
     performance = _get("/performance")
+    show_config = _get("/show_config")
+    effective_timeframe = None
+    try:
+        if isinstance(show_config, dict):
+            effective_timeframe = show_config.get("timeframe")
+    except Exception:
+        effective_timeframe = None
     trades = _get("/trades?limit=200")
 
     return {
@@ -310,6 +317,7 @@ def snapshot(db: Session, user: User, bot: Bot, limit: int = 200) -> dict:
         "profit": profit,
         "performance": performance,
         "trades": trades,
+        "effective_timeframe": effective_timeframe,
     }
 
 
