@@ -36,8 +36,35 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
     let ws: WebSocket | null = null
     let reconnectTimer: any
 
-    const setSeriesData = (candles: CandleRow[]) => {
+    const normalizeCandles = (input: any): CandleRow[] => {
+      try {
+        let rows = input
+        if (rows && typeof rows === 'object' && 'data' in rows) rows = rows.data
+        if (!Array.isArray(rows)) return []
+        if (rows.length === 0) return []
+        // Case 1: already objects with ohlc
+        if (typeof rows[0] === 'object' && !Array.isArray(rows[0])) {
+          return rows.map((r: any) => ({
+            date: typeof r.date === 'number' ? new Date(r.date > 1e12 ? r.date : r.date * 1000).toISOString() : String(r.date),
+            open: Number(r.open), high: Number(r.high), low: Number(r.low), close: Number(r.close),
+          }))
+        }
+        // Case 2: arrays [ts, open, high, low, close, volume]
+        if (Array.isArray(rows[0])) {
+          return rows.map((r: any[]) => ({
+            date: new Date((r[0] > 1e12 ? r[0] : r[0] * 1000)).toISOString(),
+            open: Number(r[1]), high: Number(r[2]), low: Number(r[3]), close: Number(r[4]),
+          }))
+        }
+        return []
+      } catch {
+        return []
+      }
+    }
+
+    const setSeriesData = (candlesIn: any) => {
       if (!seriesRef.current) return
+      const candles: CandleRow[] = normalizeCandles(candlesIn)
       const data = candles.map((c) => ({
         time: Math.floor(new Date(c.date).getTime() / 1000) as UTCTimestamp,
         open: c.open, high: c.high, low: c.low, close: c.close,
@@ -103,7 +130,7 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
             // Prefer matching pair/timeframe; else use first update
             let upd = msg.updates.find((u: any) => (!p || u.pair === p) && (!tf || u.timeframe === tf))
             if (!upd && msg.updates.length > 0) upd = msg.updates[0]
-            if (upd && Array.isArray(upd.candles)) {
+            if (upd && upd.candles) {
               setSeriesData(upd.candles)
               if (!pair) setPair(upd.pair)
               if (!timeframe) setTimeframe(upd.timeframe)
