@@ -25,6 +25,7 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
   const [pair, setPair] = useState<string | null>(null)
   const [timeframe, setTimeframe] = useState<string | null>(null)
   const [noData, setNoData] = useState<boolean>(false)
+  const [note, setNote] = useState<string>('')
 
   useEffect(() => {
     if (!wrapRef.current) return
@@ -93,6 +94,29 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
       } catch {}
     }
 
+    // Helper: probe alternative timeframes when snapshot series is empty
+    const probeTimeframes = async (pairs: string[] | undefined) => {
+      const candidates = ['1m', '3m', '5m', '15m']
+      const selPair = (pairs && pairs[0]) || pair
+      if (!selPair) return false
+      for (const tf of candidates) {
+        try {
+          const res = await api.get(`/users/${userId}/bots/${botId}/analytics/candles`, { params: { pair: selPair, timeframe: tf, limit: 200 } })
+          const rows = res.data
+          const normalized = normalizeCandles(rows)
+          if (normalized.length > 0) {
+            setPair(selPair)
+            setTimeframe(tf)
+            setSeriesData(normalized)
+            setNoData(false)
+            setNote(`Showing ${selPair} · ${tf} (fallback)`) 
+            return true
+          }
+        } catch { /* try next */ }
+      }
+      return false
+    }
+
     // Initial snapshot
     api.get(`/users/${userId}/bots/${botId}/analytics/snapshot`, { params: { limit: 200 } })
       .then(res => {
@@ -107,6 +131,8 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
           setNoData(false)
         } else {
           setNoData(true)
+          // Probe alternative TFs (common runtime case: bot uses 1m but UI/default is 5m)
+          probeTimeframes(Array.isArray(snap?.pairs) ? snap.pairs : [])
         }
       })
       .catch(() => { /* ignore */ })
@@ -154,7 +180,7 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
   return (
     <div>
       <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
-        {pair && timeframe ? `${pair} · ${timeframe}` : 'Loading series…'}
+        {note || (pair && timeframe ? `${pair} · ${timeframe}` : 'Loading series…')}
       </div>
       <div ref={wrapRef} style={{ width: '100%', minHeight: 420 }} />
       {noData && (
