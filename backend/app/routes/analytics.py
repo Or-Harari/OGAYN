@@ -5,6 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..auth import get_current_user, get_db
 from ..db.models import User, Bot
+from ..db.database import SessionLocal
 from ..services import analytics_service as svc
 from ..services import analytics_runtime as rt
 
@@ -64,16 +65,24 @@ def analytics_snapshot_parity(user_id: int, bot_id: int, timeframe: str | None =
 
 
 @router.websocket("/{user_id}/bots/{bot_id}/analytics/ws")
-async def analytics_ws(websocket: WebSocket, user_id: int, bot_id: int, db: Session = Depends(get_db)):
+async def analytics_ws(websocket: WebSocket, user_id: int, bot_id: int):
     # Note: WebSocket auth can be added via token query param or cookie; skipped for internal tooling.
-    user = db.query(User).filter(User.id == user_id).first()
-    if not user:
-        await websocket.close(code=4404)
-        return
-    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
-    if not bot:
-        await websocket.close(code=4404)
-        return
+    # Use a short-lived DB session to fetch entities, then close it to avoid holding pool connections for WS lifetime.
+    db = SessionLocal()
+    try:
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            await websocket.close(code=4404)
+            return
+        bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+        if not bot:
+            await websocket.close(code=4404)
+            return
+    finally:
+        try:
+            db.close()
+        except Exception:
+            pass
     # Start collector if not running
     try:
         rt.start_collector(user, bot)
