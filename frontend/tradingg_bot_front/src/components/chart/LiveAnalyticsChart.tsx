@@ -24,6 +24,7 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
   const seriesRef = useRef<ReturnType<IChartApi['addCandlestickSeries']> | null>(null)
   const [pair, setPair] = useState<string | null>(null)
   const [timeframe, setTimeframe] = useState<string | null>(null)
+  const [noData, setNoData] = useState<boolean>(false)
 
   useEffect(() => {
     if (!wrapRef.current) return
@@ -43,6 +44,27 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
       }))
       seriesRef.current.setData(data)
     }
+    const setTradeMarkers = (snap: any) => {
+      try {
+        if (!seriesRef.current) return
+        const trades = Array.isArray(snap?.trades) ? snap.trades : []
+        const selPair = pair || (Array.isArray(snap?.pairs) ? snap.pairs[0] : null)
+        const markers: any[] = []
+        trades.filter((t: any) => !selPair || t.pair === selPair).forEach((t: any) => {
+          const openTs = t.open_date || t.open_timestamp || t.open_time
+          const closeTs = t.close_date || t.close_timestamp || t.close_time
+          if (openTs) {
+            const time = Math.floor(new Date(openTs).getTime() / 1000) as UTCTimestamp
+            markers.push({ time, position: 'belowBar', color: '#16a34a', shape: 'arrowUp', text: 'BUY' })
+          }
+          if (closeTs) {
+            const time = Math.floor(new Date(closeTs).getTime() / 1000) as UTCTimestamp
+            markers.push({ time, position: 'aboveBar', color: '#ef4444', shape: 'arrowDown', text: 'SELL' })
+          }
+        })
+        if (markers.length) seriesRef.current.setMarkers(markers)
+      } catch {}
+    }
 
     // Initial snapshot
     api.get(`/users/${userId}/bots/${botId}/analytics/snapshot`, { params: { limit: 200 } })
@@ -54,6 +76,10 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
           setPair(first.pair)
           setTimeframe(first.timeframe)
           setSeriesData(first.candles || [])
+          setTradeMarkers(snap)
+          setNoData(false)
+        } else {
+          setNoData(true)
         }
       })
       .catch(() => { /* ignore */ })
@@ -81,6 +107,7 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
               setSeriesData(upd.candles)
               if (!pair) setPair(upd.pair)
               if (!timeframe) setTimeframe(upd.timeframe)
+              setNoData(false)
             }
           }
         } catch { /* ignore */ }
@@ -102,7 +129,12 @@ export function LiveAnalyticsChart({ userId, botId }: { userId: number; botId: n
       <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
         {pair && timeframe ? `${pair} · ${timeframe}` : 'Loading series…'}
       </div>
-      <div ref={wrapRef} />
+      <div ref={wrapRef} style={{ width: '100%', minHeight: 420 }} />
+      {noData && (
+        <div style={{ fontSize: 12, color: '#6b7280', marginTop: 6 }}>
+          No candle data yet.
+        </div>
+      )}
     </div>
   )
 }

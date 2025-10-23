@@ -298,6 +298,7 @@ def snapshot(db: Session, user: User, bot: Bot, limit: int = 200) -> dict:
     balance = _get("/balance")
     profit = _get("/profit")
     performance = _get("/performance")
+    trades = _get("/trades?limit=200")
 
     return {
         "pairs": pairs,
@@ -308,6 +309,7 @@ def snapshot(db: Session, user: User, bot: Bot, limit: int = 200) -> dict:
         "balance": balance,
         "profit": profit,
         "performance": performance,
+        "trades": trades,
     }
 
 
