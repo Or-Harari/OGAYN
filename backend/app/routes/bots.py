@@ -13,7 +13,22 @@ from ..schemas import (
     BotConfigPatch,
 )
 from ..services.workspace_service import create_bot_workspace
-from ..services.bot_service import start_bot, stop_bot, bot_status as bot_status_service, start_backtest, proxy_freqtrade_api, download_data, get_runtime_info, get_trades_history
+from ..services.bot_service import (
+    start_bot,
+    stop_bot,
+    bot_status as bot_status_service,
+    start_backtest,
+    proxy_freqtrade_api,
+    download_data,
+    get_runtime_info,
+    get_trades_history,
+    get_backtest_status,
+    tail_backtest_logs,
+    tail_runtime_logs,
+    get_backtest_results,
+    list_backtest_results,
+    load_backtest_result,
+)
 from ..services import analytics_runtime as rt
 from ..schemas import BacktestStartRequest, RuntimeInfo
 
@@ -52,6 +67,27 @@ def create_bot(user_id: int, req: BotCreate, current=Depends(get_current_user), 
     db.add(bot)
     db.commit()
     db.refresh(bot)
+    # Persist initial leverage into bot config if provided
+    try:
+        if req.leverage is not None:
+            from pathlib import Path as _Path
+            import json as _json
+            cfg_dir = _Path(bot.userdir) / "configs"
+            cfg_dir.mkdir(parents=True, exist_ok=True)
+            bot_cfg_path = cfg_dir / "bot.json"
+            current_cfg = {}
+            if bot_cfg_path.exists():
+                try:
+                    with bot_cfg_path.open("r", encoding="utf-8") as f:
+                        current_cfg = _json.load(f) or {}
+                except Exception:
+                    current_cfg = {}
+            current_cfg["leverage"] = int(req.leverage)
+            with bot_cfg_path.open("w", encoding="utf-8") as f:
+                _json.dump(current_cfg, f, indent=2, ensure_ascii=False)
+    except Exception:
+        # Non-fatal: leverage can be patched later via /config
+        pass
     return bot
 
 
@@ -99,7 +135,7 @@ def update_bot_config(user_id: int, bot_id: int, req: BotConfigPatch, current=De
 
     # Apply only allowed fields
     payload = req.dict(exclude_none=True)
-    allowed = {"pair_whitelist", "stake_currency", "stake_amount", "dry_run", "meta", "trading_mode", "margin_mode", "liquidation_buffer"}
+    allowed = {"pair_whitelist", "stake_currency", "stake_amount", "dry_run", "dry_run_wallet", "meta", "trading_mode", "margin_mode", "liquidation_buffer", "leverage", "strategy", "timeframe"}
     for k in list(payload.keys()):
         if k not in allowed:
             payload.pop(k, None)
@@ -111,9 +147,10 @@ def update_bot_config(user_id: int, bot_id: int, req: BotConfigPatch, current=De
 
     # Merge and write
     new_cfg = {**current_cfg, **payload}
+    # Atomic write via save_bot_config to avoid JSON corruption under concurrent calls
     try:
-        with bot_cfg_path.open("w", encoding="utf-8") as f:
-            _json.dump(new_cfg, f, indent=2, ensure_ascii=False)
+        from ..services.config_service import save_bot_config as _atomic_save
+        _atomic_save(new_cfg, str(bot_userdir))
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to write bot config: {e}")
 
@@ -184,7 +221,7 @@ def get_bot_balance(user_id: int, bot_id: int, current=Depends(get_current_user)
 
 
 @router.post("/{user_id}/bots/{bot_id}/data/download")
-def download_bot_data(user_id: int, bot_id: int, timerange: str, current=Depends(get_current_user), db: Session = Depends(get_db)):
+def download_bot_data(user_id: int, bot_id: int, body: dict, current=Depends(get_current_user), db: Session = Depends(get_db)):
     """Trigger market data download for backstaging.
 
     The endpoint derives pairs and timeframes from the bot's composed config and strategy, and downloads from Binance.
@@ -198,10 +235,61 @@ def download_bot_data(user_id: int, bot_id: int, timerange: str, current=Depends
     bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
+    timerange = None
+    pairs = None
+    timeframes = None
+    try:
+        timerange = body.get("timerange") if isinstance(body, dict) else None
+        pairs = body.get("pairs") if isinstance(body, dict) else None
+        timeframes = body.get("timeframes") if isinstance(body, dict) else None
+        sync = bool(body.get("sync")) if isinstance(body, dict) else False
+    except Exception:
+        timerange = None
+        sync = False
     if not timerange or not isinstance(timerange, str):
         raise HTTPException(status_code=422, detail="timerange is required (string)")
-    result = download_data(db, user, bot, timerange)
+    if pairs is not None and not isinstance(pairs, list):
+        raise HTTPException(status_code=422, detail="pairs must be a list of strings when provided")
+    if timeframes is not None and not isinstance(timeframes, list):
+        raise HTTPException(status_code=422, detail="timeframes must be a list of strings when provided")
+    result = download_data(db, user, bot, timerange, pairs_override=pairs, timeframes_override=timeframes, sync=sync)
     return result
+
+
+@router.get("/{user_id}/bots/{bot_id}/backtest/results")
+def backtest_results_route(user_id: int, bot_id: int, limit_trades: int = 200, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    res = get_backtest_results(bot, limit_trades=limit_trades)
+    return res
+
+
+@router.get("/{user_id}/bots/{bot_id}/backtest/list")
+def backtest_list_route(user_id: int, bot_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    items = list_backtest_results(bot)
+    return {"items": items}
+
+
+@router.get("/{user_id}/bots/{bot_id}/backtest/result")
+def backtest_result_route(user_id: int, bot_id: int, file: str, limit_trades: int = 200, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    res = load_backtest_result(bot, file=file, limit_trades=limit_trades)
+    return res
 
 
 @router.api_route("/{user_id}/bots/{bot_id}/proxy/freqtrade/{full_path:path}", methods=["GET", "POST", "DELETE", "PUT", "PATCH", "HEAD", "OPTIONS"])
@@ -258,6 +346,43 @@ def start_backtest_route(user_id: int, bot_id: int, req: BacktestStartRequest, c
     db.commit()
     db.refresh(bot)
     return {"status": bot.status, "pid": bot.pid, "config": bot.config_path}
+
+
+@router.get("/{user_id}/bots/{bot_id}/backtest/status")
+def backtest_status_route(user_id: int, bot_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    st = get_backtest_status(bot)
+    return st
+
+
+@router.get("/{user_id}/bots/{bot_id}/backtest/logs")
+def backtest_logs_route(user_id: int, bot_id: int, tail: int = 1000, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    res = tail_backtest_logs(bot, tail=tail)
+    return res
+
+
+@router.get("/{user_id}/bots/{bot_id}/logs")
+def bot_logs_route(user_id: int, bot_id: int, tail: int = 1000, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Tail the running bot container logs (dryrun/live)."""
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    res = tail_runtime_logs(bot, tail=tail)
+    return res
 
 
 @router.get("/{user_id}/bots/{bot_id}/status")
@@ -328,8 +453,41 @@ def update_bot_strategy(user_id: int, bot_id: int, req: BotStrategyUpdate, curre
     bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
+    # New behavior: write 'strategy' directly into bot.json and clear active_strategy for single source of truth.
+    from pathlib import Path as _Path
     import json as _json
-    bot.active_strategy = _json.dumps(req.active_strategy.dict(exclude_none=True))
-    db.commit()
-    db.refresh(bot)
+    strategy_val: str | None = None
+    if isinstance(req.strategy, str) and req.strategy.strip():
+        strategy_val = req.strategy.strip()
+    elif req.active_strategy:
+        try:
+            data = req.active_strategy.dict(exclude_none=True)
+            strategy_val = str(data.get("name") or data.get("clazz") or "").strip()
+        except Exception:
+            strategy_val = None
+    if not strategy_val:
+        raise HTTPException(status_code=422, detail="strategy is required")
+    cfg_dir = _Path(bot.userdir) / "configs"
+    cfg_dir.mkdir(parents=True, exist_ok=True)
+    bot_cfg_path = cfg_dir / "bot.json"
+    current_cfg = {}
+    try:
+        if bot_cfg_path.exists():
+            with bot_cfg_path.open("r", encoding="utf-8") as f:
+                current_cfg = _json.load(f) or {}
+    except Exception:
+        current_cfg = {}
+    current_cfg["strategy"] = strategy_val
+    try:
+        from ..services.config_service import save_bot_config as _atomic_save
+        _atomic_save(current_cfg, bot.userdir)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to write bot config: {e}")
+    # Clear legacy DB field
+    try:
+        bot.active_strategy = None
+        db.commit()
+        db.refresh(bot)
+    except Exception:
+        pass
     return bot

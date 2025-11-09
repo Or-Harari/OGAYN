@@ -90,9 +90,9 @@ def create_bot_workspace(user_root: str, bot_name: str) -> str:
             base["strategy_path"] = str((uroot / "strategies").resolve())
             bot_cfg.write_text(_json.dumps(base, indent=2), encoding="utf-8")
         except Exception:
-            # Provide a placeholder strategy name; user should set this explicitly.
+            # Provide an empty strategy to force explicit selection by the user.
             bot_cfg.write_text(
-                '{"dry_run": true, "stake_currency": "USDT", "timeframe": "1m", "pair_whitelist": ["BTC/USDT", "ETH/USDT"], "strategy": "__SET_YOUR_STRATEGY__", "strategy_path": "' + str((uroot / 'strategies').resolve()).replace('\\', '\\\\') + '"}',
+                '{"dry_run": true, "stake_currency": "USDT", "timeframe": "1m", "pair_whitelist": ["BTC/USDT", "ETH/USDT"], "strategy": "", "strategy_path": "' + str((uroot / 'strategies').resolve()).replace('\\', '\\\\') + '"}',
                 encoding="utf-8",
             )
     # Seed mode-specific templates if absent

@@ -92,8 +92,7 @@ class AnalyticsCollector:
                 tfs.append(cfg.get("timeframe"))
         except Exception:
             pass
-        if not tfs:
-            tfs = ["5m"]
+        # If no timeframe resolved from strategy or config, leave empty; collector will produce no series.
         self._pairs = pairs
         self._tfs = tfs
 
@@ -103,17 +102,25 @@ class AnalyticsCollector:
         # Cadence: min of timeframe seconds across tfs, bounded between 15s and 60s
         min_tf = min(_parse_timeframe_secs(tf) for tf in (self._tfs or ["60s"]))
         cadence = max(15, min(60, min_tf // 2))
+        # Warm-up: retry faster for a short time until we get first data (handles API not-ready on app reopen)
+        warmup_attempts = 6  # ~ up to 30s at 5s intervals
+        warmup_delay = 5
         while not self._stopped.is_set():
             try:
-                await self._tick()
+                had_updates = await self._tick()
             except Exception:
-                pass
+                had_updates = False
+            # Shorter waits during warm-up if no updates yet; otherwise normal cadence
+            wait_s = cadence
+            if not had_updates and warmup_attempts > 0:
+                wait_s = min(warmup_delay, cadence)
+                warmup_attempts -= 1
             try:
-                await asyncio.wait_for(self._stopped.wait(), timeout=cadence)
+                await asyncio.wait_for(self._stopped.wait(), timeout=wait_s)
             except asyncio.TimeoutError:
                 pass
 
-    async def _tick(self) -> None:
+    async def _tick(self) -> bool:
         # Recompute all series (simple and robust for v1)
         user_root = self.user_root
         bot_userdir = self.bot_userdir
@@ -161,11 +168,12 @@ class AnalyticsCollector:
                 except Exception:
                     continue
         if not updates:
-            return
+            return False
         async with self._cache_lock:
             for sd in updates:
                 self._series[(sd.pair, sd.timeframe)] = sd
         await broadcast_updates(self.bot_id, updates)
+        return True
 
     async def snapshot(self) -> dict:
         async with self._cache_lock:
@@ -229,6 +237,21 @@ async def register_ws(bot_id: int, ws: WebSocket) -> None:
         if bot_id not in _ws_clients:
             _ws_clients[bot_id] = set()
         _ws_clients[bot_id].add(ws)
+    # Best-effort: send current cache immediately if available (does not create data; uses actual collected state)
+    try:
+        c = _collectors.get(bot_id)
+        if c:
+            snap = await c.snapshot()
+            series = snap.get('series') if isinstance(snap, dict) else None
+            if isinstance(series, list) and len(series) > 0:
+                payload = {
+                    "type": "series",
+                    "updates": series,
+                }
+                import json as _json
+                await ws.send_text(_json.dumps(payload))
+    except Exception:
+        pass
 
 
 async def unregister_ws(bot_id: int, ws: WebSocket) -> None:

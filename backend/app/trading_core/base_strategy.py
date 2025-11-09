@@ -4,8 +4,9 @@ import logging
 from pandas import DataFrame
 from typing import Any
 
+
 try:
-    from freqtrade.strategy import IStrategy  # type: ignore
+    from freqtrade.strategy import IStrategy, merge_informative_pair  # type: ignore
 except Exception:  # pragma: no cover - fallback during tooling without freqtrade
     class IStrategy:  # type: ignore
         pass

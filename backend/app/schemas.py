@@ -44,6 +44,7 @@ class BotCreate(BaseModel):
     name: str
     mode: str | None = None  # 'live' | 'dryrun' | 'backstage'
     active_strategy: ActiveStrategySpec | None = None
+    leverage: int | None = None  # optional futures leverage
 
 
 class BotRead(BaseModel):
@@ -98,6 +99,9 @@ class BotConfigPatch(BaseModel):
     dry_run: bool | None = None
     mode: str | None = None  # allow patching mode via bot config if desired
     meta: dict | None = None  # merged into meta at compose time
+    leverage: int | None = None
+    dry_run_wallet: Union[float, Dict[str, float], None] = None  # allow overriding simulated wallet balance
+    strategy: str | None = None  # single source of truth for strategy class name
 
 
 class BotModeUpdate(BaseModel):
@@ -105,7 +109,9 @@ class BotModeUpdate(BaseModel):
 
 
 class BotStrategyUpdate(BaseModel):
-    active_strategy: ActiveStrategySpec
+    # New: allow direct strategy update. Keep active_strategy for backward compatibility.
+    strategy: str | None = None
+    active_strategy: ActiveStrategySpec | None = None
 
 
 # ---- Structured config models ----
@@ -174,12 +180,21 @@ class BacktestStartRequest(BaseModel):
     """Parameters to initiate a backtest run.
 
     - timerange: Freqtrade timerange, e.g. "20250101-20250131" or "-20250131".
-    - strategy: Optional override of strategy class name (uses composed config by default).
+        - strategy: Optional override of strategy class name (uses composed config by default).
+        - pair/timeframe overrides: When provided, backtest will run only for these selections
+            instead of all pairs/timeframes from the composed config. "pair"/"timeframe" are
+            shorthand for single-selection; "pairs"/"timeframes" allow passing multiple, though
+            backtesting will honor only the first timeframe.
     - export: Whether to export results. Defaults to 'trades'. Set to 'none' to skip.
     - export_filename: Optional export filename relative to user_data/backtest_results.
     """
     timerange: str | None = None
     strategy: str | None = None
+    # Optional overrides coming from Backstage selection
+    pair: str | None = None
+    timeframe: str | None = None
+    pairs: list[str] | None = None
+    timeframes: list[str] | None = None
     export: Literal['none', 'trades'] = 'trades'
     export_filename: str | None = None
 

@@ -10,6 +10,7 @@ export type ActiveStrategySpec = {
 export type CreateBotFormValues = {
   name: string
   mode?: 'live' | 'dryrun' | 'backstage'
+  leverage?: number
   active_strategy?: ActiveStrategySpec
 }
 
@@ -28,6 +29,7 @@ export function CreateBotForm({
   const [mode, setMode] = useState<CreateBotFormValues['mode']>(initial?.mode ?? 'dryrun')
   const [strategyName, setStrategyName] = useState(initial?.active_strategy?.name ?? '')
   const [strategyClazz, setStrategyClazz] = useState(initial?.active_strategy?.clazz ?? '')
+  const [leverage, setLeverage] = useState<number>(typeof initial?.leverage === 'number' ? initial!.leverage : 1)
   const [error, setError] = useState<string | null>(null)
   const [strategies, setStrategies] = useState<string[]>([])
   const [loadingStrategies, setLoadingStrategies] = useState(false)
@@ -61,8 +63,9 @@ export function CreateBotForm({
       setError('Bot name is required')
       return
     }
-    const payload: CreateBotFormValues = { name: name.trim() }
+  const payload: CreateBotFormValues = { name: name.trim() }
     if (mode) payload.mode = mode
+  if (leverage && leverage > 0) payload.leverage = leverage
     const active: ActiveStrategySpec = {}
     if (strategyName.trim()) active.name = strategyName.trim()
     if (strategyClazz.trim()) active.clazz = strategyClazz.trim()
@@ -96,6 +99,23 @@ export function CreateBotForm({
           <option value="live">Live</option>
           <option value="backstage">Backstage</option>
         </select>
+      </div>
+      <div>
+        <label style={{ display: 'block', fontWeight: 600, marginBottom: 4 }}>Leverage (1-25)</label>
+        <input
+          type="number"
+          min={1}
+          max={25}
+          step={1}
+          value={leverage}
+          onChange={(e) => setLeverage(Math.max(1, Math.min(25, Number(e.target.value) || 1)))}
+          placeholder="e.g. 5"
+          style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
+          disabled={submitting}
+        />
+        <div style={{ color: '#6b7280', fontSize: 12, marginTop: 4 }}>
+          Applies only in futures mode. Higher leverage magnifies both gains and losses. Strategy stop distances are not auto-scaled.
+        </div>
       </div>
       <div style={{ display: 'grid', gap: 8 }}>
         <div style={{ fontWeight: 600 }}>Active Strategy</div>

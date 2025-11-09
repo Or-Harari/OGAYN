@@ -61,7 +61,8 @@ BOT_PLACEHOLDER = {
     "trading_mode": "spot",
     "entry_pricing": {"price_side": "same", "price_last_balance": 0.0, "use_order_book": False, "order_book_top": 1},
     "exit_pricing": {"price_side": "same", "price_last_balance": 0.0, "use_order_book": False, "order_book_top": 1},
-    "strategy": "__SET_YOUR_STRATEGY__",
+    # Leave strategy key present but empty to force user selection and fail validation early until set.
+    "strategy": "",
 }
 
 

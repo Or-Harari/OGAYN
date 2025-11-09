@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
+import tempfile
 import socket
 import secrets
 
@@ -139,19 +140,87 @@ def save_account_config(data: Dict[str, Any], workspace_root: str) -> Dict[str, 
 
 
 # --- Bot config CRUD ---
+def _parse_first_json_object(text: str) -> Dict[str, Any] | None:
+    """Best-effort: extract the first complete JSON object from a text that may contain trailing garbage.
+
+    This protects against concurrent writes producing concatenated JSON objects.
+    """
+    try:
+        # Fast path
+        return json.loads(text)
+    except Exception:
+        pass
+    # Streaming brace counter (ignores braces inside strings)
+    in_str = False
+    esc = False
+    depth = 0
+    start = None
+    for i, ch in enumerate(text):
+        if in_str:
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            continue
+        else:
+            if ch == '"':
+                in_str = True
+                continue
+            if ch == '{':
+                if depth == 0:
+                    start = i
+                depth += 1
+            elif ch == '}':
+                if depth > 0:
+                    depth -= 1
+                    if depth == 0 and start is not None:
+                        try:
+                            candidate = text[start:i+1]
+                            return json.loads(candidate)
+                        except Exception:
+                            return None
+    return None
+
+
 def load_bot_config(workspace_root: str) -> Dict[str, Any]:
     p = _bot_file_path(workspace_root)
     if p.exists():
-        with p.open("r", encoding="utf-8") as f:
-            return json.load(f) or {}
+        raw = p.read_text(encoding="utf-8", errors="ignore")
+        try:
+            return json.loads(raw) or {}
+        except Exception:
+            # Try to salvage the first JSON object and rewrite atomically
+            obj = _parse_first_json_object(raw)
+            if obj is not None:
+                try:
+                    save_bot_config(obj, workspace_root)
+                except Exception:
+                    pass
+                return obj
+            # As a last resort, return empty dict (caller may decide to reset)
+            return {}
     return {}
 
 
 def save_bot_config(data: Dict[str, Any], workspace_root: str) -> Dict[str, Any]:
+    """Atomically write bot.json to avoid corruption during concurrent writes."""
     p = _bot_file_path(workspace_root)
     p.parent.mkdir(parents=True, exist_ok=True)
-    with p.open("w", encoding="utf-8") as f:
-        json.dump(data or {}, f, indent=2, ensure_ascii=False)
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix="bot.json.", suffix=".tmp", dir=str(p.parent))
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(data or {}, f, indent=2, ensure_ascii=False)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, p)
+    finally:
+        try:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+        except Exception:
+            pass
     return data or {}
 
 
@@ -249,6 +318,7 @@ SYSTEM_DEFAULTS: Dict[str, Any] = {
     "dry_run": True,
     "trading_mode": "spot",
     "stake_currency": "USDT",
+    "leverage": 1,  # default leverage (spot ignored)
     "entry_pricing": {"price_side": "ask", "use_order_book": False, "order_book_top": 1, "price_last_balance": 0.0},
     "exit_pricing": {"price_side": "bid", "use_order_book": False, "order_book_top": 1, "price_last_balance": 0.0},
     # Ensure bot auto-starts trading loop unless explicitly overridden.
@@ -312,30 +382,16 @@ def compose_bot_config(user_workspace_root: str, bot_user_data_root: str, mode: 
                     sources.append((f"mode:{mode}", mode_path))
         except Exception:
             pass
-    # Inject active_strategy if provided (overrides meta active strategy spec)
-    if active_strategy:
-        meta.setdefault("active_strategy", {})
-        for k, v in active_strategy.items():
-            if v is not None:
-                meta.setdefault("active_strategy", {})[k] = v
-        # If a concrete class name is provided, propagate to runtime config 'strategy'
-        clazz = active_strategy.get("clazz") if isinstance(active_strategy, dict) else None
-        if isinstance(clazz, str) and clazz:
-            # Be tolerant if a filename was provided; strip .py suffix
-            if clazz.lower().endswith(".py"):
-                clazz = clazz[:-3]
-            if clazz:
-                cfg["strategy"] = clazz
+    # 5c. sane defaults for backstage when no explicit mode file provided
+    try:
+        if (mode or "").lower() == "backstage":
+            # Ensure non-trading startup unless overridden explicitly
+            cfg.setdefault("initial_state", "stopped")
+            # Backstage must be non-live
+            cfg["dry_run"] = True
+    except Exception:
+        pass
     # 6. strategy_path resolution - unify to <user_workspace_root>/strategies
-    # If only a name was provided, use it as the concrete class name
-    if isinstance(active_strategy, dict):
-        try:
-            current_strategy = cfg.get("strategy")
-            # Treat placeholder and empty values as unset, so name can override
-            if (current_strategy in {None, "", "__SET_YOUR_STRATEGY__"}) and active_strategy.get("name"):
-                cfg["strategy"] = active_strategy.get("name")
-        except Exception:
-            pass
     unified_dir_candidates = [
         user_root / "strategies",
         user_root / "user" / "strategies",  # fallback for older code paths
@@ -365,23 +421,7 @@ def compose_bot_config(user_workspace_root: str, bot_user_data_root: str, mode: 
 
 
 def _finalize_and_write_cfg(cfg: Dict[str, Any], meta: Dict[str, Any], out_path: Path, sources: List[Tuple[str, Path]]):
-    # Ensure strategy
-    # If placeholder is present, attempt to derive from meta.active_strategy first
-    try:
-        if cfg.get("strategy") in {None, "", "__SET_YOUR_STRATEGY__"}:
-            aname = None
-            if isinstance(meta, dict):
-                act = meta.get("active_strategy") or {}
-                # Prefer name, then clazz
-                aname = act.get("name") or act.get("clazz")
-                if isinstance(aname, str) and aname.lower().endswith(".py"):
-                    aname = aname[:-3]
-            if aname:
-                cfg["strategy"] = aname
-    except Exception:
-        pass
-    # Leave strategy unset by default; bots must specify a concrete strategy class name
-    cfg.setdefault("strategy", cfg.get("strategy", "__SET_YOUR_STRATEGY__"))
+    # Do not infer or inject strategy. If missing, start validation will fail explicitly.
     # Ensure initial_state default if still missing after layering
     cfg.setdefault("initial_state", SYSTEM_DEFAULTS.get("initial_state", "running"))
     # Ensure local API server is enabled for backend proxying (single entrypoint)
@@ -457,6 +497,29 @@ def _finalize_and_write_cfg(cfg: Dict[str, Any], meta: Dict[str, Any], out_path:
     if tmode == "spot":
         for k in ("liquidation_buffer", "margin_mode"):
             cfg.pop(k, None)
+        cfg.pop("leverage", None)
+    # Ensure sane pricing on futures: avoid ticker-only pricing (which may be unavailable) by enabling orderbook pricing
+    if tmode == "futures":
+        try:
+            cfg.setdefault("entry_pricing", {})
+            cfg.setdefault("exit_pricing", {})
+            # Force orderbook pricing for both entry and exit to avoid 'Ticker pricing not available' errors
+            cfg["entry_pricing"]["use_order_book"] = True
+            cfg["exit_pricing"]["use_order_book"] = True
+            # Preserve existing price_side and other fields; defaults are merged below if missing
+            # Clamp leverage to sane bounds (1-50)
+            try:
+                lev_raw = cfg.get("leverage", 1)
+                lev = int(lev_raw) if not isinstance(lev_raw, bool) else 1
+                if lev < 1:
+                    lev = 1
+                if lev > 50:
+                    lev = 50
+                cfg["leverage"] = lev
+            except Exception:
+                cfg["leverage"] = 1
+        except Exception:
+            pass
     # Merge pricing defaults without overwriting existing keys
     for block in ("entry_pricing", "exit_pricing"):
         defaults = SYSTEM_DEFAULTS[block]
