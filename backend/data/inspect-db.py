@@ -25,10 +25,20 @@ def resolve_freqtrade_db(script_path: Path) -> Path:
 
 def main(argv: list[str]):
     script_path = Path(__file__)
+    # Simple flags
+    include_views = any(a.lower() in {"--include-views", "--views"} for a in argv[1:])
+    dump_schema = any(a.lower() in {"--schema", "-s"} for a in argv[1:])
 
-    if len(argv) > 1:
+    # Find first non-flag argument as DB path
+    arg_path = None
+    for a in argv[1:]:
+        if not a.startswith("-"):
+            arg_path = a
+            break
+
+    if arg_path:
         # User supplied a path
-        supplied = Path(argv[1])
+        supplied = Path(arg_path)
         if not supplied.is_absolute():
             supplied = Path.cwd() / supplied
         target = supplied
@@ -70,8 +80,13 @@ def main(argv: list[str]):
     print("SQLite version:", sqlite3.sqlite_version)
 
     cursor = conn.cursor()
+    # Collect tables (and optionally views)
     tables = [r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")] \
         if True else []
+    views = []
+    if include_views:
+        views = [r[0] for r in cursor.execute("SELECT name FROM sqlite_master WHERE type='view' ORDER BY name")] \
+            if True else []
     if not tables:
         print("(No tables found)")
     else:
@@ -83,6 +98,11 @@ def main(argv: list[str]):
             except Exception as e:  # noqa: BLE001
                 cnt = f"ERR: {e}"  # pragma: no cover
             print(f"  {t.ljust(width)}  {cnt}")
+
+    if views:
+        print("\nViews:")
+        for v in views:
+            print(f"  {v}")
 
     # Optional: show the first few rows of core tables
     sample_tables = [name for name in ("trades", "orders", "pairlocks") if name in tables]
@@ -98,8 +118,28 @@ def main(argv: list[str]):
         except Exception as e:  # noqa: BLE001
             print("  Error reading table:", e)
 
+    # Dump schemas if requested
+    if dump_schema:
+        print("\nSchemas (CREATE statements):")
+        try:
+            rows = cursor.execute("SELECT type,name,sql FROM sqlite_master WHERE sql IS NOT NULL ORDER BY type,name").fetchall()
+            for typ, name, sql in rows:
+                print(f"\n-- {typ}: {name}\n{sql}")
+        except Exception as e:
+            print("  Error reading schemas:", e)
+
     conn.close()
     return 0
 
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main(sys.argv))
+
+def list_tables(db_path: str):
+    conn = sqlite3.connect(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name;")
+        return [row[0] for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

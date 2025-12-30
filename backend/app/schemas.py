@@ -56,6 +56,8 @@ class BotRead(BaseModel):
     config_path: str | None = None
     mode: str | None = None
     active_strategy: dict | None = None
+    # Newly exposed primary source of truth for selected strategy
+    strategy: str | None = None
 
     class Config:
         from_attributes = True
@@ -207,3 +209,8 @@ class RuntimeInfo(BaseModel):
     api_base: str | None = None
     running: bool | None = None
     config_path: str | None = None
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str

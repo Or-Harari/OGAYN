@@ -381,8 +381,7 @@ def snapshot(db: Session, user: User, bot: Bot, limit: int = 200) -> dict:
             return None
         return p
 
-    open_trades = _get("/open_trades")
-    open_orders = _get("/open_orders")
+    open_trades = _get("/status")
     balance = _get("/balance")
     profit = _get("/profit")
     performance = _get("/performance")
@@ -393,6 +392,7 @@ def snapshot(db: Session, user: User, bot: Bot, limit: int = 200) -> dict:
             effective_timeframe = show_config.get("timeframe")
     except Exception:
         effective_timeframe = None
+    
     trades = _get("/trades?limit=200")
 
     return {
@@ -400,7 +400,6 @@ def snapshot(db: Session, user: User, bot: Bot, limit: int = 200) -> dict:
         "timeframes": tfs,
         "series": series,
         "open_trades": open_trades,
-        "open_orders": open_orders,
         "balance": balance,
         "profit": profit,
         "performance": performance,
@@ -605,6 +604,15 @@ def main():
             if f.exists():
                 try:
                     import importlib.util
+                    # Ensure the candidate's directory is on sys.path so sibling imports work
+                    try:
+                        import sys as _sys
+                        pdir = str(f.parent)
+                        if pdir not in _sys.path:
+                            _sys.path.insert(0, pdir)
+                            sys.stderr.write(f"Added to sys.path: {pdir}\n")
+                    except Exception:
+                        pass
                     spec = importlib.util.spec_from_file_location(sname, str(f))
                     if spec and spec.loader:
                         mod = importlib.util.module_from_spec(spec)

@@ -8,10 +8,12 @@ export function Navigation() {
 
   return (
     <nav className="nav">
-      <div className="nav-logo">FT Bot</div>
+      <div className="nav-logo">No-Face</div>
       <ul className="nav-list">
         <li><NavLink to="/" end className={({isActive}) => isActive ? 'active' : ''}>Overview</NavLink></li>
         <li><NavLink to="/bots" className={({isActive}) => isActive ? 'active' : ''}>Bots</NavLink></li>
+        <li><NavLink to="/backtest" className={({isActive}) => isActive ? 'active' : ''}>Backtest</NavLink></li>
+        <li><NavLink to="/settings" className={({isActive}) => isActive ? 'active' : ''}>Settings</NavLink></li>
       </ul>
       <div className="nav-footer">
         {token ? (

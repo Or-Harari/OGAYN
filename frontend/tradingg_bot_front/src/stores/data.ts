@@ -9,7 +9,7 @@ export interface BotInfo {
   mode?: string | null
   pid?: number | null
   config_path?: string | null
-  active_strategy?: Record<string, any> | null
+  strategy?: Record<string, any> | null
 }
 
 export interface TradeRow {

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status, Request
+import os
 from sqlalchemy.orm import Session
 
 from ..auth import get_current_user, get_db
@@ -32,7 +33,9 @@ from ..services.bot_service import (
 from ..services import analytics_runtime as rt
 from ..schemas import BacktestStartRequest, RuntimeInfo
 
+import logging
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _get_user(db: Session, user_id: int) -> User:
@@ -340,12 +343,26 @@ def start_backtest_route(user_id: int, bot_id: int, req: BacktestStartRequest, c
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
     rec = start_backtest(db, user, bot, req)
-    bot.status = rec.status
-    bot.pid = rec.pid
-    bot.config_path = rec.config_path
-    db.commit()
-    db.refresh(bot)
-    return {"status": bot.status, "pid": bot.pid, "config": bot.config_path}
+    # Behavior toggle: allow legacy behavior that mutates bot fields during backtest
+    # Controlled via env FT_BACKTEST_MUTATE_BOT (default 'false' to keep isolation by default)
+    mutate = os.environ.get("FT_BACKTEST_MUTATE_BOT", "false").lower() == "true"
+    if mutate:
+        bot.status = rec.status
+        bot.pid = rec.pid
+        # Only mutate config_path if it points to the bot's own userdir (never the isolated bt-userdir)
+        try:
+            from pathlib import Path
+            bot_ud = Path(bot.userdir).resolve()
+            rec_cfg = Path(rec.config_path).resolve() if rec.config_path else None
+            if rec_cfg and str(bot_ud) in str(rec_cfg):
+                bot.config_path = rec.config_path
+        except Exception:
+            pass
+        db.commit()
+        db.refresh(bot)
+        return {"status": bot.status, "pid": bot.pid, "config": bot.config_path}
+    else:
+        return {"status": rec.status, "pid": rec.pid, "config": rec.config_path}
 
 
 @router.get("/{user_id}/bots/{bot_id}/backtest/status")
@@ -425,10 +442,54 @@ def bot_trades_history_route(user_id: int, bot_id: int, mode: str | None = None,
         if current.id != user.id:
                 raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
         bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
-        if not bot:
-                raise HTTPException(status_code=404, detail="Bot not found")
         rows = get_trades_history(user, bot, mode=mode, limit=limit)
+        logger.info(f"Fetched {len(rows)} trade history rows for bot {bot.id} (mode={mode}, limit={limit})")
         return rows
+
+
+@router.post("/{user_id}/bots/{bot_id}/dryrun/reset")
+def bot_dryrun_reset_route(user_id: int, bot_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Reset (delete) the bot's dryrun trades database files.
+
+    Removes tradesv3.dryrun.sqlite / tradesv4.dryrun.sqlite from the bot's userdir if present.
+    Bot must be stopped before calling this to avoid file locks.
+    """
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    # Ensure bot is not running to avoid file lock issues
+    try:
+        info = get_runtime_info(db, user, bot)
+        if info and info.get("running"):
+            raise HTTPException(status_code=409, detail="Stop the bot before resetting dryrun trades")
+    except HTTPException:
+        raise
+    except Exception:
+        pass
+    from pathlib import Path as _Path
+    bot_userdir = _Path(bot.userdir).resolve()
+    candidates = [
+        bot_userdir / "tradesv3.dryrun.sqlite",
+        bot_userdir / "tradesv4.dryrun.sqlite",
+    ]
+    removed: list[str] = []
+    for p in candidates:
+        try:
+            if p.exists():
+                p.unlink()
+                removed.append(p.name)
+        except Exception as e:
+            # If deletion fails, attempt to truncate file
+            try:
+                with p.open("w", encoding="utf-8") as f:
+                    f.write("")
+                removed.append(p.name)
+            except Exception:
+                logger.warning(f"Failed to remove/truncate {p}: {e}")
+    return {"status": "ok", "removed": removed}
 
 
 @router.patch("/{user_id}/bots/{bot_id}/mode", response_model=BotRead)

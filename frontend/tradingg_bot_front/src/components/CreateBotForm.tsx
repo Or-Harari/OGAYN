@@ -2,16 +2,12 @@ import { useEffect, useState } from 'react'
 import { api } from '@/lib/api'
 import { useAuth } from '@/stores/auth'
 
-export type ActiveStrategySpec = {
-  name?: string
-  clazz?: string
-}
 
 export type CreateBotFormValues = {
   name: string
-  mode?: 'live' | 'dryrun' | 'backstage'
+  mode?: 'live' | 'dryrun'
   leverage?: number
-  active_strategy?: ActiveStrategySpec
+  strategy?: string
 }
 
 export function CreateBotForm({
@@ -27,8 +23,7 @@ export function CreateBotForm({
 }) {
   const [name, setName] = useState(initial?.name ?? '')
   const [mode, setMode] = useState<CreateBotFormValues['mode']>(initial?.mode ?? 'dryrun')
-  const [strategyName, setStrategyName] = useState(initial?.active_strategy?.name ?? '')
-  const [strategyClazz, setStrategyClazz] = useState(initial?.active_strategy?.clazz ?? '')
+  const [strategyName, setStrategyName] = useState(initial?.strategy ?? '')
   const [leverage, setLeverage] = useState<number>(typeof initial?.leverage === 'number' ? initial!.leverage : 1)
   const [error, setError] = useState<string | null>(null)
   const [strategies, setStrategies] = useState<string[]>([])
@@ -66,10 +61,7 @@ export function CreateBotForm({
   const payload: CreateBotFormValues = { name: name.trim() }
     if (mode) payload.mode = mode
   if (leverage && leverage > 0) payload.leverage = leverage
-    const active: ActiveStrategySpec = {}
-    if (strategyName.trim()) active.name = strategyName.trim()
-    if (strategyClazz.trim()) active.clazz = strategyClazz.trim()
-    if (active.name || active.clazz) payload.active_strategy = active
+    if (strategyName.trim()) payload.strategy = strategyName.trim()
     await onSubmit(payload)
   }
 
@@ -97,7 +89,7 @@ export function CreateBotForm({
         >
           <option value="dryrun">Dry Run</option>
           <option value="live">Live</option>
-          <option value="backstage">Backstage</option>
+          {/* Backstage mode removed per revert */}
         </select>
       </div>
       <div>
@@ -117,33 +109,7 @@ export function CreateBotForm({
           Applies only in futures mode. Higher leverage magnifies both gains and losses. Strategy stop distances are not auto-scaled.
         </div>
       </div>
-      <div style={{ display: 'grid', gap: 8 }}>
-        <div style={{ fontWeight: 600 }}>Active Strategy</div>
-        <select
-          value={strategyName}
-          onChange={(e) => setStrategyName(e.target.value)}
-          style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
-          disabled={submitting || loadingStrategies}
-        >
-          <option value="">-- Select a strategy --</option>
-          {strategies.map((s) => (
-            <option key={s} value={s}>{s}</option>
-          ))}
-        </select>
-        {loadingStrategies && <div style={{ color: '#6b7280', fontSize: 12 }}>Loading strategies…</div>}
-        {strategiesError && <div style={{ color: '#dc2626', fontSize: 12 }}>{strategiesError}</div>}
-        <input
-          type="text"
-          value={strategyClazz}
-          onChange={(e) => setStrategyClazz(e.target.value)}
-          placeholder="Fully qualified class path (e.g., user.variants.Strategy4.Strategy4)"
-          style={{ width: '100%', padding: '8px 10px', border: '1px solid #d1d5db', borderRadius: 6 }}
-          disabled={submitting}
-        />
-        <div style={{ color: '#6b7280', fontSize: 12 }}>
-          Choose a strategy from your workspace, or provide a custom class path. If both are provided, both will be stored.
-        </div>
-      </div>
+
       {error && <div style={{ color: '#dc2626' }}>{error}</div>}
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         {onCancel && (

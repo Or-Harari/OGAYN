@@ -465,6 +465,25 @@ def _finalize_and_write_cfg(cfg: Dict[str, Any], meta: Dict[str, Any], out_path:
         api.setdefault("ws_token", secrets.token_urlsafe(24))
         cfg["api_server"] = api
 
+    # Ensure persistent local SQLite DB path is set explicitly.
+    # Recent Freqtrade versions may not create the default DB unless a db_url is provided.
+    try:
+        if not isinstance(cfg.get("db_url"), str) or not cfg.get("db_url"):
+            # Use container paths – config is consumed inside docker.
+            is_dry = bool(cfg.get("dry_run"))
+            dbfile = "/freqtrade/user_data/tradesv3.dryrun.sqlite" if is_dry else "/freqtrade/user_data/tradesv3.sqlite"
+            cfg["db_url"] = f"sqlite:///{dbfile}"
+    except Exception:
+        # Best-effort only – fall back to Freqtrade defaults if anything goes wrong.
+        pass
+
+    # Make sure a logfile is defined so we also get on-disk logs for troubleshooting.
+    try:
+        if not isinstance(cfg.get("logfile"), str) or not cfg.get("logfile"):
+            cfg["logfile"] = "/freqtrade/user_data/logs/freqtrade.log"
+    except Exception:
+        pass
+
     # Remove any parameters that must live in the strategy (not config)
     strategy_owned = [
         "minimal_roi",

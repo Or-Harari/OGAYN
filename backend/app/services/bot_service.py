@@ -6,6 +6,7 @@ import subprocess
 import json
 import time
 from pathlib import Path
+import socket
 import sqlite3
 from typing import Optional, List, Tuple, Dict
 import re
@@ -39,6 +40,47 @@ def _docker_is_running(name: str) -> bool:
     try:
         out = subprocess.run(["docker", "inspect", "-f", "{{.State.Running}}", name], capture_output=True, text=True, encoding="utf-8", errors="ignore")
         return out.returncode == 0 and out.stdout.strip().lower() == "true"
+    except Exception:
+        return False
+
+
+def _docker_published_port(name: str, container_port: int) -> Optional[int]:
+    """Return the published host port mapped to the given container_port.
+
+    Parses Docker inspect NetworkSettings.Ports for the container and finds the host port
+    that maps to "<container_port>/tcp". Returns None if not found or on errors.
+    """
+    try:
+        out = subprocess.run(["docker", "inspect", name], capture_output=True, text=True, encoding="utf-8", errors="ignore")
+        if out.returncode != 0:
+            return None
+        data = json.loads(out.stdout)
+        if not isinstance(data, list) or not data:
+            return None
+        ports = (((data[0] or {}).get("NetworkSettings") or {}).get("Ports") or {})
+        key = f"{int(container_port)}/tcp"
+        entry = ports.get(key)
+        if isinstance(entry, list) and entry:
+            try:
+                host_port = entry[0].get("HostPort")
+                return int(host_port) if host_port else None
+            except Exception:
+                return None
+        return None
+    except Exception:
+        return None
+
+
+def _is_port_available(port: int, host: str = "127.0.0.1") -> bool:
+    """Return True if the TCP port appears free on the given host."""
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                s.bind((host, int(port)))
+                return True
+            except OSError:
+                return False
     except Exception:
         return False
 
@@ -390,26 +432,22 @@ def _download_data_sync(user_root: Path, bot_userdir: Path, exchange: str, pairs
     ]
     if prepend:
         base_cmd += ["--prepend"]
-    # Prepare 2 variants: with and without '--candle-type futures' for compatibility across FT versions
-    with_ct = list(base_cmd)
-    without_ct = list(base_cmd)
+    # Normalize futures pairs if needed (do NOT pass unsupported '--candle-type')
+    cmd_base = list(base_cmd)
     if (candle_type or "").lower() == "futures":
-        # Normalize pairs for Binance Futures contract notation
         pairs = _normalize_pairs_for_market(pairs, "futures", exchange)
-        with_ct += ["--candle-type", "futures"]
-    # Pass timeframes and pairs as single flags with all values to avoid argparse overriding earlier ones
+    # Guard: require at least one timeframe, otherwise raise explicit error
+    if not timeframes:
+        raise HTTPException(status_code=422, detail="No timeframes discovered (strategy/config missing timeframe). Set 'timeframe' or 'informative_timeframe(s)').")
+    # Append timeframes and pairs
     if timeframes:
-        with_ct += ["-t", *timeframes]
-        without_ct += ["-t", *timeframes]
+        cmd_base += ["-t", *timeframes]
     if pairs:
-        with_ct += ["-p", *pairs]
-        without_ct += ["-p", *pairs]
+        cmd_base += ["-p", *pairs]
 
     env = os.environ.copy()
     # Try with '--candle-type futures' first when in futures mode; on unrecognized-arg error, retry without the flag
-    attempts = [with_ct] if (candle_type or "").lower() == "futures" else [without_ct]
-    if (candle_type or "").lower() == "futures":
-        attempts.append(without_ct)
+    attempts = [cmd_base]
     last_err: str | None = None
     for idx, cmd in enumerate(attempts):
         _log_command(out_log, cmd, {"PYTHONPATH": docker_py_path, "AUTO": "download-before-backtest"})
@@ -433,12 +471,6 @@ def _download_data_sync(user_root: Path, bot_userdir: Path, exchange: str, pairs
                     last_err = tail[-1] if tail else str(e)
                 except Exception:
                     last_err = str(e)
-                # If this was the first attempt with '--candle-type' and error indicates unrecognized argument, continue to retry
-                if idx == 0 and (candle_type or "").lower() == "futures":
-                    low = (last_err or "").lower()
-                    if "unrecognized arguments" in low and "candle-type" in low:
-                        continue
-                # Otherwise fail
                 break
     if last_err:
         # Fallback: try per-pair downloads to skip problematic pairs (e.g., virtual/test pairs)
@@ -446,15 +478,11 @@ def _download_data_sync(user_root: Path, bot_userdir: Path, exchange: str, pairs
         errors: list[str] = []
         for p in (pairs or []):
             for idx, template in enumerate(attempts):
-                # Build per-pair command by replacing any existing -p list with single pair
-                cmd = [c for c in template if c != "-p" and not (isinstance(c, str) and c in pairs)]
-                # Reconstruct command cleanly
                 cmd = list(template)
-                # Remove any existing pairs specification
+                # Remove existing multi-pair spec
                 try:
                     if "-p" in cmd:
                         i = cmd.index("-p")
-                        # Remove -p and following N entries until next flag or end
                         j = i + 1
                         while j < len(cmd) and not str(cmd[j]).startswith("-"):
                             j += 1
@@ -477,9 +505,7 @@ def _download_data_sync(user_root: Path, bot_userdir: Path, exchange: str, pairs
                         successes += 1
                         break
                     except Exception as e:
-                        # try next attempt variant (with/without --candle-type)
                         if idx == len(attempts) - 1:
-                            # record final error for this pair
                             try:
                                 data = err_log.read_bytes()[-4096:]
                                 tail = data.decode("utf-8", errors="ignore").strip().splitlines()
@@ -698,9 +724,19 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
     # Publish API port and resolve strategy path mapping into container
     try:
         api = cfg_json.get("api_server", {}) if 'cfg_json' in locals() else {}
-        host_port = int(api.get("listen_port", 8080) if api else 8080)
+        container_port = int(api.get("listen_port", 8080) if api else 8080)
     except Exception:
-        host_port = 8080
+        container_port = 8080
+    # Choose a host port, avoiding conflicts. Prefer the same as container_port when available.
+    host_port = container_port
+    if not _is_port_available(host_port):
+        # Find the next available port within a reasonable range
+        base = max(1024, container_port)
+        for candidate in range(base, base + 2000):
+            if _is_port_available(candidate):
+                host_port = candidate
+                break
+    # Record port mapping in the start log for diagnostics
     # Remap strategy_path to container path if present
     container_spath = None
     try:
@@ -733,8 +769,8 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
     cmd = [
         "docker", "run", "-d",
         "--name", name,
-        # Map host listen_port -> container listen_port (matches Freqtrade config)
-        "-p", f"127.0.0.1:{host_port}:{host_port}",
+        # Map chosen host port -> container listen_port (from config)
+        "-p", f"127.0.0.1:{host_port}:{container_port}",
     ]
     for v in volumes:
         cmd += ["-v", v]
@@ -756,7 +792,7 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
     if container_spath:
         cmd += ["--strategy-path", container_spath]
     env = os.environ.copy()
-    _log_command(out_log, cmd, {"DOCKER": "true"})
+    _log_command(out_log, cmd, {"DOCKER": "true", "API_PORT_MAPPING": f"host={host_port} container={container_port}"})
     # Run docker command synchronously to detect immediate failures (e.g., daemon down)
     try:
         with out_log.open("ab") as out, err_log.open("ab") as err:
@@ -1084,17 +1120,35 @@ def start_backtest(db: Session, user: User, bot: Bot, params: BacktestStartReque
     except Exception:
         tz = "Asia/Jerusalem"
     cmd += ["-e", f"TZ={tz}"]
+    # Determine trading mode; current freqtrade build supports only standard 'backtesting' command.
+    # Futures backtesting is activated via config (trading_mode=futures) and proper pair notation.
+    try:
+        tmode = str((cfg_json.get("trading_mode") or "spot")).lower()
+    except Exception:
+        tmode = "spot"
+    # If futures, normalize pairs in generated config (in-place) so freqtrade sees correct contracts.
+    if tmode == "futures":
+        try:
+            exch_name = None
+            if isinstance(cfg_json.get("exchange"), dict):
+                exch_name = cfg_json.get("exchange", {}).get("name")
+            elif isinstance(cfg_json.get("exchange"), str):
+                exch_name = cfg_json.get("exchange")
+            exch_name = exch_name or "binance"
+            if isinstance(cfg_json.get("pairs"), list):
+                cfg_json["pairs"] = _normalize_pairs_for_market(cfg_json.get("pairs"), "futures", exch_name)
+            elif isinstance(cfg_json.get("pair_whitelist"), list):
+                cfg_json["pair_whitelist"] = _normalize_pairs_for_market(cfg_json.get("pair_whitelist"), "futures", exch_name)
+            with open(cfg_path, "w", encoding="utf-8") as f:
+                json.dump(cfg_json, f, indent=2)
+        except Exception:
+            pass
     cmd += [
         image,
         "backtesting",
         "--config", "/freqtrade/user_data/configs/config.generated.json",
         "--userdir", "/freqtrade/user_data",
     ]
-    # Ensure backtesting respects trading_mode via config/pair format (do not pass '--candle-type')
-    try:
-        tmode = str((cfg_json.get("trading_mode") or "spot")).lower()
-    except Exception:
-        tmode = "spot"
     # Remap strategy_path for backtesting as well (if strategy_path exists in config)
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
@@ -1143,7 +1197,7 @@ def start_backtest(db: Session, user: User, bot: Bot, params: BacktestStartReque
         repo_root = file_path.parent
     py_path_parts = [str(user_root), str(repo_root)] + ([env.get("PYTHONPATH")] if env.get("PYTHONPATH") else [])
     env["PYTHONPATH"] = os.pathsep.join(py_path_parts)
-    _log_command(out_log, cmd, {"PYTHONPATH": env["PYTHONPATH"]})
+    _log_command(out_log, cmd, {"PYTHONPATH": env["PYTHONPATH"], "ENGINE": "backtesting", "TRADING_MODE": tmode})
 
     with out_log.open("ab") as out, err_log.open("ab") as err:
         proc = subprocess.Popen(
@@ -1274,7 +1328,7 @@ def get_backtest_results(bot: Bot, limit_trades: int = 200) -> dict:
 
     # ✅ Extract trades from nested structure
     trades = _extract_trades(data)
-
+    timerange  = data.get("timerange") or None
     # ✅ Extract timeframe used by the backtest if present in the JSON
     timeframe_val = None
     try:
@@ -1324,6 +1378,7 @@ def get_backtest_results(bot: Bot, limit_trades: int = 200) -> dict:
         "by_pair": by_pair,
         "file": f"{zip_path.name}::{inner_json_name}",
         "timeframe": timeframe_val,
+        "timerange": timerange,
     }
 
     # Summary computed
@@ -1555,9 +1610,19 @@ def _bot_freqtrade_api_base(bot: Bot) -> str | None:
     api = _load_api_server_from_config(bot.config_path) or {}
     if not api or not api.get("enabled"):
         return None
-    # Always use host loopback; we publish container port to 127.0.0.1:port
-    port = api.get("listen_port", 8080)
-    return f"http://127.0.0.1:{port}/api/v1"
+    # Determine effective host port via Docker mapping when available
+    try:
+        container_port = int(api.get("listen_port", 8080))
+    except Exception:
+        container_port = 8080
+    name = _docker_container_name(bot)
+    host_port: Optional[int] = None
+    if _docker_is_running(name):
+        host_port = _docker_published_port(name, container_port)
+    if host_port is None:
+        # Fallback to config port when mapping is unknown
+        host_port = container_port
+    return f"http://127.0.0.1:{int(host_port)}/api/v1"
 
 
 def proxy_freqtrade_api(
@@ -1657,8 +1722,9 @@ def _read_trades_from_sqlite(db_path: Path, mode_label: str, bot_id: int, limit:
             *( ["open_rate"] if has("open_rate") else [] ),
             *( ["close_date"] if has("close_date") else [] ),
             *( ["close_rate"] if has("close_rate") else [] ),
-            *( ["profit_abs"] if has("profit_abs") else [] ),
-            *( ["profit_ratio"] if has("profit_ratio") else [] ),
+            *( ["close_profit_abs"] if has("close_profit_abs") else [] ),
+            *( ["close_profit"] if has("close_profit") else [] ),
+            *( ["realized_profit"] if has("realized_profit") else [] ),
             *( ["is_open"] if has("is_open") else [] ),
             *( ["sell_reason"] if has("sell_reason") else [] ),
         ]
@@ -1689,8 +1755,9 @@ def _read_trades_from_sqlite(db_path: Path, mode_label: str, bot_id: int, limit:
                 "side": side,
                 "open_rate": d.get("open_rate"),
                 "close_rate": d.get("close_rate"),
-                "profit_abs": d.get("profit_abs"),
-                "profit_ratio": d.get("profit_ratio"),
+                "close_profit_abs": d.get("close_profit_abs"),
+                "realized_profit": d.get("realized_profit"),
+                "close_profit": d.get("close_profit"),
                 "open_date": open_date,
                 "close_date": close_date,
                 "status": status,
@@ -1716,8 +1783,18 @@ def get_trades_history(user: User, bot: Bot, mode: str | None = None, limit: int
     bot_userdir = Path(bot.userdir).resolve()
     targets: list[tuple[Path, str]] = []
     m = (mode or "all").lower()
-    live_db = bot_userdir / "tradesv3.sqlite"
-    dry_db = bot_userdir / "tradesv3.dryrun.sqlite"
+    # Support both v3 and v4 filenames (some Freqtrade versions switched naming)
+    live_candidates = [
+        bot_userdir / "tradesv3.sqlite",
+        bot_userdir / "tradesv4.sqlite",
+    ]
+    dry_candidates = [
+        bot_userdir / "tradesv3.dryrun.sqlite",
+        bot_userdir / "tradesv4.dryrun.sqlite",
+    ]
+    # Resolve the first existing path among candidates; keep first as default even if not present
+    live_db = next((p for p in live_candidates if p.exists()), live_candidates[0])
+    dry_db = next((p for p in dry_candidates if p.exists()), dry_candidates[0])
     if m in ("live",):
         targets.append((live_db, "live"))
     elif m in ("dry", "dryrun"):
@@ -1739,11 +1816,17 @@ def get_trades_history(user: User, bot: Bot, mode: str | None = None, limit: int
 
 
 def _import_strategy_timeframes(cfg_path: str) -> list[str]:
-    """Read timeframes from the composed config only.
+    """Discover all timeframes required by the strategy/config.
 
-    - Returns unique list of timeframes based on config fields (e.g., 'timeframe').
-    - No dynamic imports, no regex parsing, and no implicit fallback to any default.
-    - If nothing is configured, returns an empty list and the caller can decide how to proceed.
+    Order (deduplicated, preserve first-seen):
+      1. Config primary timeframe (timeframe)
+      2. Config lists (informative_timeframes, timeframes)
+      3. Strategy class attrs (timeframe, ticker_interval)
+      4. Strategy class singular informative_timeframe
+      5. Strategy class lists (informative_timeframes, timeframes)
+
+    Returns empty list if none found (caller should handle fallback rather than letting
+    Freqtrade default silently to 5m).
     """
     try:
         with open(cfg_path, "r", encoding="utf-8") as f:
@@ -1757,25 +1840,24 @@ def _import_strategy_timeframes(cfg_path: str) -> list[str]:
         if s and s not in seen:
             seen.add(s)
             tfs.append(s)
-    # Primary timeframe
+    # 1. Config primary timeframe
     tf = cfg.get("timeframe")
     if isinstance(tf, str):
         _add(tf)
-    # Optional: a list of additional/informative timeframes the strategy needs
+    # 2. Config lists
     for key in ("informative_timeframes", "timeframes"):
         itfs = cfg.get(key)
         if isinstance(itfs, list):
             for t in itfs:
                 if isinstance(t, str):
                     _add(t)
-    # Best-effort: also read timeframe(s) from the Strategy class if available.
+    # 3-5. Strategy class discovery
     try:
         strat_name = cfg.get("strategy")
         spath = cfg.get("strategy_path")
         if isinstance(strat_name, str) and strat_name and strat_name != "__SET_YOUR_STRATEGY__":
             cfg_file = Path(cfg_path).resolve()
             bot_userdir = cfg_file.parent.parent if cfg_file.parent.name == "configs" else cfg_file.parent
-            # Derive user root (workspaces/<user>/user) if present in path
             user_root: Path | None = None
             try:
                 parts = list(bot_userdir.parts)
@@ -1786,17 +1868,12 @@ def _import_strategy_timeframes(cfg_path: str) -> list[str]:
             except Exception:
                 user_root = None
             search_roots: list[Path] = []
-            # Strategy path resolution
             try:
                 if isinstance(spath, str) and spath:
                     p = Path(spath)
-                    if p.is_absolute():
-                        search_roots.append(p)
-                    else:
-                        search_roots.append((bot_userdir / p).resolve())
+                    search_roots.append(p if p.is_absolute() else (bot_userdir / p).resolve())
             except Exception:
                 pass
-            # Common strategy locations
             try:
                 if user_root and (user_root / "strategies").exists():
                     search_roots.append(user_root / "strategies")
@@ -1809,7 +1886,6 @@ def _import_strategy_timeframes(cfg_path: str) -> list[str]:
                     search_roots.append(bot_userdir / "strategies")
             except Exception:
                 pass
-            # Find strategy file
             candidates: list[Path] = []
             try:
                 for root in search_roots:
@@ -1820,13 +1896,11 @@ def _import_strategy_timeframes(cfg_path: str) -> list[str]:
                             if fn.lower() == f"{strat_name.lower()}.py":
                                 candidates.append(Path(dirpath) / fn)
                 if not candidates:
-                    # Non-recursive attempt
                     for root in search_roots:
                         candidates.append(root / f"{strat_name}.py")
                 candidates = [c for c in candidates if c.exists()]
             except Exception:
                 candidates = []
-            # Import and read attributes
             for fpath in candidates:
                 try:
                     import importlib.util as _ilu
@@ -1837,12 +1911,13 @@ def _import_strategy_timeframes(cfg_path: str) -> list[str]:
                         cls = getattr(mod, strat_name, None)
                         if cls is None:
                             continue
-                        # Primary timeframe attributes
                         for attr in ("timeframe", "ticker_interval"):
                             val = getattr(cls, attr, None)
                             if isinstance(val, str):
                                 _add(val)
-                        # Additional timeframe lists
+                        inf_tf = getattr(cls, "informative_timeframe", None)
+                        if isinstance(inf_tf, str):
+                            _add(inf_tf)
                         for attr in ("informative_timeframes", "timeframes"):
                             vals = getattr(cls, attr, None)
                             if isinstance(vals, list):
@@ -1852,6 +1927,13 @@ def _import_strategy_timeframes(cfg_path: str) -> list[str]:
                         break
                 except Exception:
                     continue
+    except Exception:
+        pass
+    try:
+        if not tfs:
+            dbg = Path(cfg_path).parent / "timeframe.discovery.warn"
+            if not dbg.exists():
+                dbg.write_text("No timeframes discovered; Freqtrade may default to 5m. Ensure strategy defines 'timeframe' or config sets 'timeframe'.", encoding="utf-8")
     except Exception:
         pass
     return tfs
@@ -2091,8 +2173,14 @@ def get_runtime_info(db: Session, user: User, bot: Bot) -> dict:
         api_cfg = (_cfgjson.get("api_server") or {}) if isinstance(_cfgjson, dict) else {}
         # Report host-side address
         api_host = "127.0.0.1"
+        # Prefer Docker-published host port when container is running
         try:
-            api_port = int(api_cfg.get("listen_port", 8080)) if isinstance(api_cfg, dict) else 8080
+            container_port_val = int(api_cfg.get("listen_port", 8080)) if isinstance(api_cfg, dict) else 8080
+        except Exception:
+            container_port_val = 8080
+        mapped_port = _docker_published_port(container, container_port_val) if _docker_is_running(container) else None
+        try:
+            api_port = int(mapped_port) if mapped_port is not None else int(container_port_val)
         except Exception:
             api_port = 8080
         api_base = f"http://{api_host}:{api_port}/api/v1"

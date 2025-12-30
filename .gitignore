@@ -45,6 +45,9 @@ workspaces/**/user/strategies/variants/**
 build/
 dist/
 
+# Local isolated backtest workspace
+bt-userdir/**
+
 # Env files / secrets
 *.env
 .env.*
@@ -55,6 +58,8 @@ node_modules/
 # Bytecode caches in backend
 backend/**/__pycache__/
 
+# Frontend build outputs
+frontend/**/dist/**
 # Local config artifacts that are generated
 workspaces/**/user_data/configs/config.generated.json
 workspaces/**/user_data/configs/config.generated.sources.json

@@ -1,6 +1,6 @@
 import * as React from 'react'
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { createChart, IChartApi,SeriesMarker, UTCTimestamp } from 'lightweight-charts'
+import { createChart, IChartApi, ISeriesApi, SeriesMarker, UTCTimestamp } from 'lightweight-charts'
 import { api } from '@/lib/api'
 
 // Convert inputs to finite numbers; returns NaN for null/undefined/NaN/Inf or non-parsable
@@ -117,10 +117,10 @@ export function BackstagePanel({
   const wrapRef = useRef<HTMLDivElement | null>(null)
   const oscWrapRef = useRef<HTMLDivElement | null>(null)
   const chartRef = useRef<IChartApi | null>(null)
-  const seriesRef = useRef<ReturnType<IChartApi['addCandlestickSeries']> | null>(null)
-  const indicatorSeriesRef = useRef<Map<string, ReturnType<IChartApi['addLineSeries']>>>(new Map())
+  const seriesRef = useRef<ISeriesApi<'Candlestick'> | null>(null)
+  const indicatorSeriesRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
   const oscChartRef = useRef<IChartApi | null>(null)
-  const oscSeriesRef = useRef<Map<string, ReturnType<IChartApi['addLineSeries']>>>(new Map())
+  const oscSeriesRef = useRef<Map<string, ISeriesApi<'Line'>>>(new Map())
   const lastTimesRef = useRef<UTCTimestamp[]>([])
   const lastIndicatorsRef = useRef<Record<string, any[]>>({})
   const lastCandlesRef = useRef<any[] | null>(null)
@@ -143,11 +143,11 @@ export function BackstagePanel({
 
     if (!wrapRef.current) return
     const chart = createChart(wrapRef.current, { height: 420 })
-    chart.applyOptions({ watermark: { visible: false } as any })
-    const series = chart.addCandlestickSeries({  upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
-    wickUpColor: '#26a69a', wickDownColor: '#ef5350'})
+  chart.applyOptions({ })
+  const series = chart.addSeries({ type: 'Candlestick', upColor: '#26a69a', downColor: '#ef5350', borderVisible: false,
+  wickUpColor: '#26a69a', wickDownColor: '#ef5350'} as any)
     chartRef.current = chart
-    seriesRef.current = series
+  seriesRef.current = series as ISeriesApi<'Candlestick'>
     const a = document.querySelectorAll('#tv-attr-logo')
     if(a){
       a.forEach(el => el.remove());
@@ -156,8 +156,8 @@ export function BackstagePanel({
   setChartReady(true)
     let osc: IChartApi | null = null
     if (oscWrapRef.current) {
-      osc = createChart(oscWrapRef.current, { height: 160 })
-      osc.applyOptions({ watermark: { visible: false } as any })
+  osc = createChart(oscWrapRef.current, { height: 160 })
+  osc.applyOptions({ })
       oscChartRef.current = osc
       const as = document.querySelectorAll('#tv-attr-logo')
       if(as){
@@ -216,7 +216,7 @@ export function BackstagePanel({
     const map = useOsc ? oscSeriesRef.current : indicatorSeriesRef.current
     let s = map.get(name)
     if (!s) {
-      s = targetChart.addLineSeries({ color: palette[idx % palette.length], lineWidth: 2 })
+  s = targetChart.addSeries({ type: 'Line', color: palette[idx % palette.length], lineWidth: 2 } as any)
       map.set(name, s)
     }
     return s
@@ -420,7 +420,7 @@ const buildTradeMarkers = (trades: Array<Record<string, any>>, times: UTCTimesta
 const setAllMarkers = (signals: Record<string, any>, trades: Array<Record<string, any>>) => {
   const series = seriesRef.current;
   const times = lastTimesRef.current as UTCTimestamp[] | undefined;
-  if (!series || !times || times.length === 0) { try { series?.setMarkers([]); } catch {} return; }
+  if (!series || !times || times.length === 0) { try { (series as any)?.setMarkers?.([]); } catch {} return; }
 
   const sig = buildSignalMarkers(signals, times);
   const trd = buildTradeMarkers(trades, times);
@@ -442,8 +442,8 @@ const setAllMarkers = (signals: Record<string, any>, trades: Array<Record<string
     .sort((a, b) => (a.time as number) - (b.time as number) || orderWeight(a) - orderWeight(b));
 
   try {
-    series.setMarkers([]);     // clear
-    series.setMarkers(all);    // set both
+    (series as any).setMarkers?.([]);     // clear
+    (series as any).setMarkers?.(all);    // set both
   } catch (e) {
     console.error('[markers] setAllMarkers failed:', e);
   }

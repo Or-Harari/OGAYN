@@ -37,3 +37,22 @@ class Bot(Base):
     config_path = Column(String, nullable=True)
     mode = Column(String, nullable=True)  # live | dryrun | backstage
     active_strategy = Column(String, nullable=True)  # JSON string storing active strategy spec
+
+    # Dynamic property: derive currently selected strategy from bot.json config.
+    # This is the authoritative strategy used when composing runtime config.
+    @property
+    def strategy(self) -> str | None:  # type: ignore[override]
+        try:
+            from pathlib import Path
+            import json
+            cfg_path = Path(self.userdir) / "configs" / "bot.json"
+            if not cfg_path.exists():
+                return None
+            with cfg_path.open("r", encoding="utf-8") as f:
+                data = json.load(f) or {}
+            val = data.get("strategy")
+            if isinstance(val, str) and val.strip():
+                return val.strip()
+            return None
+        except Exception:
+            return None

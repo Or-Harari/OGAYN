@@ -7,6 +7,8 @@ import { Navigation } from '@/components/Navigation'
 import { Overview } from '@/pages/Overview'
 import { Bots } from '@/pages/Bots'
 import Toaster from '@/components/Toaster'
+import { BacktestConfig } from './BacktestConfig'
+import { Settings } from './Settings'
 
 export default function App() {
   const token = useAuth((s) => s.token)
@@ -26,6 +28,8 @@ export default function App() {
         <Routes>
           <Route path="/" element={<Overview />} />
           <Route path="/bots" element={<Bots />} />
+          <Route path="/backtest" element={<BacktestConfig />} />
+          <Route path="/settings" element={<Settings />} />
           <Route path="/login" element={<LoginForm />} />
         </Routes>
       </div>

@@ -12,7 +12,8 @@ from .db import models
 app = FastAPI(title="FT Strategy Backend")
 
 app.include_router(strategies_router, prefix="/strategies", tags=["strategies"])
-app.include_router(config_router, prefix="/config", tags=["config"])
+# config_router already declares prefix="/config" in its own APIRouter
+app.include_router(config_router)
 app.include_router(auth_router.router, prefix="/auth", tags=["auth"])
 app.include_router(users_router.router, prefix="/users", tags=["users"])
 app.include_router(bots_router.router, prefix="/users", tags=["bots"])

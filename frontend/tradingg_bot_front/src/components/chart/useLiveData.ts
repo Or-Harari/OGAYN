@@ -9,6 +9,7 @@ type LiveParams = {
   timeframe?: string      // preferred timeframe from parent (optional)
   limit?: number
   enabled?: boolean       // gate WS + HTTP activity
+  pollingSec?: number     // snapshot polling cadence in seconds (defaults to 1s)
 }
 
 function toWsOrigin(httpBase: string): string {
@@ -22,12 +23,13 @@ function toWsOrigin(httpBase: string): string {
   }
 }
 
-export function useLiveData({ userId, botId, pair, timeframe, limit = 300, enabled = true }: LiveParams) {
+export function useLiveData({ userId, botId, pair, timeframe, limit = 300, enabled = true, pollingSec = 1 }: LiveParams) {
   // public data
   const [candles, setCandles] = useState<any[]>([])
   const [indicators, setIndicators] = useState<Record<string, any>>({})
   const [signals, setSignals] = useState<Record<string, any>>({})
   const [trades, setTrades] = useState<any[]>([])
+  const [openTrades, setOpenTrades] = useState<any[]>([])
   const [pairs, setPairs] = useState<string[]>([])
   const [timeframes, setTimeframes] = useState<string[]>([])
   const [effectiveTimeframe, setEffectiveTimeframe] = useState<string | undefined>(undefined)
@@ -37,11 +39,9 @@ export function useLiveData({ userId, botId, pair, timeframe, limit = 300, enabl
   const lastMsgAtRef = useRef<number>(0)
   const pollTimerRef = useRef<any>(null)
   const reconnectTimerRef = useRef<any>(null)
-  // avoid tight fallback loops when snapshot lacks candles
-  const postRefreshOnceRef = useRef<{ key?: string; at?: number }>({})
-  // cache of latest series by pair/timeframe for instant switching without extra fetches
-  const lastSeriesRef = useRef<any[]>([])
-  const seriesIndexRef = useRef<Map<string, any>>(new Map())
+  const pullingRef = useRef<boolean>(false)
+  // sequential fetch guard to avoid race conditions on rapid switching
+  const lastFetchIdRef = useRef<number>(0)
 
   const hasData = (c: any): boolean => {
     return Array.isArray(c?.data) ? c.data.length > 0 : Array.isArray(c) ? c.length > 0 : false
@@ -55,6 +55,37 @@ export function useLiveData({ userId, botId, pair, timeframe, limit = 300, enabl
   const httpReady = !!userId && !!botId
   const wsReady = !!botId
 
+  // Helper: direct fetch for candles for current active pair/tf when cache misses
+  const fetchCandlesDirect = async (p?: string, tf?: string) => {
+    if (!httpReady || !enabled) return
+    if (!p || !tf) return
+    try {
+      const fetchId = ++lastFetchIdRef.current
+      const r2 = await api.get(`/users/${userId}/bots/${botId}/analytics/candles`, {
+        params: { pair: p, timeframe: tf, limit }
+      })
+      const data = r2.data
+      const ok = Array.isArray(data?.data) ? data.data.length > 0 : Array.isArray(data) ? data.length > 0 : false
+      if (ok) {
+        // ensure response is still relevant for current selection and latest request
+        if (fetchId !== lastFetchIdRef.current) return
+        if (pairRef.current !== p || tfRef.current !== tf) return
+        setCandles(data)
+        let inds: Record<string, any> | undefined
+        let sigs: Record<string, any> | undefined
+        try {
+          const extracted = extractOverlaysFromCandles(data)
+          inds = extracted.indicators
+          sigs = extracted.signals
+          if (inds) setIndicators(inds)
+          if (sigs) setSignals(sigs)
+        } catch {}
+      }
+    } catch (e) {
+      console.debug('[live] direct candles fetch error', e)
+    }
+  }
+
   // Helper: adopt pair/tf (only when valid) and log it
   const adoptPairTf = (nextPair?: string, nextTf?: string) => {
     const prevKey = pairRef.current && tfRef.current ? `${pairRef.current}|${tfRef.current}` : ''
@@ -65,32 +96,50 @@ export function useLiveData({ userId, botId, pair, timeframe, limit = 300, enabl
     }
     const newKey = pairRef.current && tfRef.current ? `${pairRef.current}|${tfRef.current}` : ''
     if (newKey && newKey !== prevKey) {
-      // render immediately from cache if available (no extra calls)
-      const cached = seriesIndexRef.current.get(newKey)
-      if (cached) {
-        if (hasData(cached.candles)) setCandles(cached.candles)
-        if (cached.indicators) setIndicators(cached.indicators)
-        if (cached.signals) setSignals(cached.signals)
-      }
+      // clear any stale view immediately while we resolve the proper dataset
+      setCandles([])
+      // Always fetch fresh candles for the new selection
+      fetchCandlesDirect(pairRef.current, tfRef.current)
     }
   }
 
-  const mergeSeriesIndex = (series: any[]) => {
-    const arr = Array.isArray(series) ? series : []
-    if (!lastSeriesRef.current) lastSeriesRef.current = []
-    for (const s of arr) {
-      const k = s && s.pair && s.timeframe ? `${s.pair}|${s.timeframe}` : ''
-      if (!k) continue
-      const prev = seriesIndexRef.current.get(k) || {}
-      const merged: any = { ...prev, ...s }
-      // Preserve non-empty candles if incoming has no data
-      if ('candles' in s) {
-        if (!hasData(s.candles) && hasData(prev.candles)) {
-          merged.candles = prev.candles
-        }
-      }
-      seriesIndexRef.current.set(k, merged)
+  // cache removed
+
+  // Build indicators and signals from a candles response when snapshot doesn't carry overlays
+  function extractOverlaysFromCandles(resp: any): { indicators: Record<string, any>, signals: Record<string, any> } {
+    const rows: any[] = Array.isArray(resp?.data) ? resp.data : []
+    const cols: string[] = Array.isArray(resp?.columns) ? resp.columns : (Array.isArray(resp?.all_columns) ? resp.all_columns : [])
+    const idx: Record<string, number> = {}
+    cols.forEach((c, i) => { idx[String(c).toLowerCase()] = i })
+    const gi = (name: string): number => (idx.hasOwnProperty(name) ? idx[name] : -1)
+    const pickNum = (r: any[], i: number) => (i >= 0 && r[i] != null ? Number(r[i]) : null)
+    const pickBool = (r: any[], i: number) => (i >= 0 ? (r[i] === 1 || r[i] === true || r[i] === '1' || r[i] === 'true') : false)
+    const pickStr = (r: any[], i: number) => (i >= 0 && r[i] != null ? String(r[i]) : '')
+
+    const lineNames = ['pivot_low','pivot_high','valid_low','valid_high','zone_low','zone_high','target_high','target_low']
+    const indicators: Record<string, any> = {}
+    for (const name of lineNames) {
+      const ii = gi(name)
+      if (ii >= 0) indicators[name] = rows.map((r) => pickNum(r, ii))
     }
+
+    // signals
+    const enterLongIdx = gi('enter_long')
+    const exitLongIdx = gi('exit_long')
+    const enterShortIdx = gi('enter_short')
+    const exitShortIdx = gi('exit_short')
+    const enterTagIdx = gi('enter_tag')
+    const exitTagIdx = gi('exit_tag')
+    const signals: Record<string, any> = {
+      enter_long: rows.map((r) => pickBool(r, enterLongIdx)),
+      exit_long: rows.map((r) => pickBool(r, exitLongIdx)),
+    }
+    if (enterShortIdx >= 0) signals.enter_short = rows.map((r) => pickBool(r, enterShortIdx))
+    if (exitShortIdx >= 0) signals.exit_short = rows.map((r) => pickBool(r, exitShortIdx))
+    if (enterTagIdx >= 0) signals.enter_tag = rows.map((r) => pickStr(r, enterTagIdx))
+    if (exitTagIdx >= 0) signals.exit_tag = rows.map((r) => pickStr(r, exitTagIdx))
+
+    return { indicators, signals }
   }
 
   // ---- Initial snapshot & cadence polling ----
@@ -99,6 +148,8 @@ export function useLiveData({ userId, botId, pair, timeframe, limit = 300, enabl
     let cancelled = false
 
     const pull = async (reason: string) => {
+      if (pullingRef.current) return
+      pullingRef.current = true
       // Always use current refs to avoid stale closures
       const p = pairRef.current || pair
       const tf = tfRef.current || timeframe
@@ -107,18 +158,12 @@ export function useLiveData({ userId, botId, pair, timeframe, limit = 300, enabl
       try {
         const res = await api.get(`/users/${userId}/bots/${botId}/analytics/snapshot`, { params: { limit } })
         if (cancelled) return
-console.log('[live] SNAPSHOT RESPONSE',p);
+        // capture last msg time for keepalive logic
         const snap = res.data || {}
-  const series = Array.isArray(snap.series) ? snap.series : []
-  mergeSeriesIndex(series)
         const ps: string[] = Array.isArray(snap.pairs) ? snap.pairs : []
         const tfs: string[] = Array.isArray(snap.timeframes) ? snap.timeframes : []
         const effTf: string | undefined =
           typeof snap.effective_timeframe === 'string' ? snap.effective_timeframe : undefined
-
-        setPairs(ps)
-        setTimeframes(tfs)
-        setEffectiveTimeframe(effTf)
 
         // Decide the active pair/timeframe conservatively:
         // Keep current selection if set; only adopt defaults when nothing selected yet
@@ -129,75 +174,27 @@ console.log('[live] SNAPSHOT RESPONSE',p);
         if (!nextTf) nextTf = effTf || tfs[0]
         if (nextPair || nextTf) adoptPairTf(nextPair, nextTf)
 
-        // Find matching series
-  const matchKey = (pairRef.current && tfRef.current) ? `${pairRef.current}|${tfRef.current}` : ''
-  const match = matchKey ? seriesIndexRef.current.get(matchKey) : undefined
-
-        // Update trades (if present)
-        if (snap.trades && Array.isArray(snap.trades)) setTrades(snap.trades)
-        else if (snap.trades && Array.isArray(snap.trades?.trades)) setTrades(snap.trades.trades)
+        // Trades only (candles fetched separately on adopt)
+        const snapTrades = snap.trades && Array.isArray(snap.trades?.trades) ? snap.trades.trades : (Array.isArray(snap.trades) ? snap.trades : [])
+        if (Array.isArray(snapTrades)) setTrades(snapTrades)
         else setTrades([])
-
-        // Primary path: we got candles in snapshot
-        if (match?.candles && Array.isArray(match.candles?.data) ? match.candles.data.length > 0 : Array.isArray(match?.candles) && match.candles.length > 0) {
-          setCandles(match.candles)
-          setIndicators(match.indicators || {})
-          setSignals(match.signals || {})
-          console.debug('[live] snapshot applied', {
-            pair: pairRef.current, tf: tfRef.current,
-            dataLen: Array.isArray(match.candles?.data) ? match.candles.data.length : (match.candles?.length ?? 0),
-          })
-        } else {
-          // Fallback: fetch candles directly for the adopted pair/tf
-          const pf = pairRef.current
-          const tff = tfRef.current
-          if (pf && tff) {
-            const key = `${pf}|${tff}`
-            // Only do a single fallback + one post-refresh per pair/tf within 60s
-            const lastKey = postRefreshOnceRef.current.key
-            const lastAt = postRefreshOnceRef.current.at || 0
-            const withinWindow = Date.now() - lastAt < 60_000
-            if (lastKey === key && withinWindow) {
-              console.debug('[live] fallback suppressed (recent)', { key })
-              return
-            }
-            console.debug('[live] FALLBACK-CANDLES', { pair: pf, tf: tff })
-            try {
-              const r2 = await api.get(`/users/${userId}/bots/${botId}/analytics/candles`, {
-                params: { pair: pf, timeframe: tff, limit }
-              })
-              if (!cancelled) {
-                const data = r2.data
-                const hasData = Array.isArray(data?.data) ? data.data.length > 0 : Array.isArray(data) ? data.length > 0 : false
-                if (hasData) {
-                  setCandles(data)
-                } else {
-                  console.debug('[live] fallback returned empty candles; preserving current series')
-                }
-                // Schedule a single post-refresh snapshot to pick indicators/signals
-                postRefreshOnceRef.current = { key, at: Date.now() }
-                setTimeout(() => pull('post-candles-refresh'), 1000)
-              }
-            } catch (e) {
-              console.warn('[live] fallback candles error', e)
-            }
-          } else {
-            console.debug('[live] No pair/tf to fallback-fetch.')
-          }
-        }
+        if (Array.isArray(snap.open_trades)) setOpenTrades(snap.open_trades)
+        else setOpenTrades([])
       } catch (e) {
         console.debug('[live] snapshot error', e)
+      } finally {
+        pullingRef.current = false
       }
     }
 
     // initial paint
     pull('initial')
 
-    // poll if WS silent >30s (collector cadence ~15–60s)
+    // steady polling on user-selected cadence (seconds)
+    const every = Math.max(1, Math.floor(pollingSec || 1)) * 1000
     pollTimerRef.current = setInterval(() => {
-      const silentMs = Date.now() - (lastMsgAtRef.current || 0)
-      if (silentMs > 30_000) pull('keepalive')
-    }, 10_000)
+      pull('interval')
+    }, every)
 
     return () => {
       clearInterval(pollTimerRef.current)
@@ -205,7 +202,7 @@ console.log('[live] SNAPSHOT RESPONSE',p);
       cancelled = true
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [httpReady, enabled, userId, botId, limit]) // don't depend on pair/timeframe props here (we read via refs)
+  }, [httpReady, enabled, userId, botId, limit, pollingSec]) // don't depend on pair/timeframe props here (we read via refs)
 
   // Keep refs aligned to props if parent explicitly controls them
   useEffect(() => {
@@ -260,13 +257,6 @@ console.log('[live] SNAPSHOT RESPONSE',p);
 
             const p = pairRef.current
             const tf = tfRef.current
-            // merge updates into cache first
-            for (const u of msg.updates) {
-              const k = u && u.pair && u.timeframe ? `${u.pair}|${u.timeframe}` : ''
-              if (!k) continue
-              const prev = seriesIndexRef.current.get(k) || {}
-              seriesIndexRef.current.set(k, { ...prev, ...u })
-            }
             let upd = msg.updates.find((u: any) => (!p || u.pair === p) && (!tf || u.timeframe === tf))
             // If no update matches current selection (e.g., stale/invalid pair/tf), adopt the first update
             if (!upd && msg.updates.length > 0) {
@@ -279,20 +269,8 @@ console.log('[live] SNAPSHOT RESPONSE',p);
             if (!p || !tf) {
               adoptPairTf(upd.pair, upd.timeframe)
             }
-            if (upd.candles) {
-              const hasData = Array.isArray(upd.candles?.data)
-                ? upd.candles.data.length > 0
-                : Array.isArray(upd.candles)
-                  ? upd.candles.length > 0
-                  : false
-              if (hasData) {
-                setCandles(upd.candles)
-              } else {
-                // Ignore empty-candle WS frames to avoid wiping the chart during idle/heartbeat updates
-                console.debug('[live] ws update contained empty candles; preserving current series')
-              }
-            }
-            if (upd.indicators) setIndicators(upd.indicators)
+            // Do not update candles from WS to avoid mixing; rely on /candles fetches only
+            //if (upd.indicators) setIndicators(upd.indicators)
             if (upd.signals) setSignals(upd.signals)
 
             const len = Array.isArray(upd.candles?.data) ? upd.candles.data.length : (upd.candles?.length ?? 0)
@@ -325,12 +303,12 @@ console.log('[live] SNAPSHOT RESPONSE',p);
 
   return useMemo(() => ({
     // data
-    candles, indicators, signals, trades,
+    candles, indicators, signals, trades, openTrades,
     // meta to build UI toggles
     pairs, timeframes, effectiveTimeframe,
     // helpers (if a parent wants to force pair/tf)
     setActivePair: (p: string) => adoptPairTf(p, undefined),
     setActiveTimeframe: (tf: string) => adoptPairTf(undefined, tf),
     getActive: () => ({ pair: pairRef.current, timeframe: tfRef.current }),
-  }), [candles, indicators, signals, trades, pairs, timeframes, effectiveTimeframe])
+  }), [candles, indicators, signals, trades, openTrades, pairs, timeframes, effectiveTimeframe])
 }

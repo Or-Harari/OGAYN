@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket
+import os
 from sqlalchemy.orm import Session
 import asyncio, json
 
@@ -23,7 +24,7 @@ def _get_user(db: Session, user_id: int) -> User:
 
 
 @router.get("/{user_id}/bots/{bot_id}/analytics/snapshot")
-def analytics_snapshot(user_id: int, bot_id: int, limit: int = 200, current=Depends(get_current_user), db: Session = Depends(get_db)):
+async def analytics_snapshot(user_id: int, bot_id: int, limit: int = 200, current=Depends(get_current_user), db: Session = Depends(get_db)):
     user = _get_user(db, user_id)
     if current.id != user.id:
         raise HTTPException(status_code=403, detail="Forbidden")
@@ -34,14 +35,32 @@ def analytics_snapshot(user_id: int, bot_id: int, limit: int = 200, current=Depe
     # Prefer runtime cache if collector running
     cached = None
     try:
-        cached = rt.snapshot_from_runtime(user, bot)
-        import asyncio
-        if asyncio.iscoroutine(cached):
-            cached = asyncio.get_event_loop().run_until_complete(cached)  # type: ignore
+        cached = await rt.snapshot_from_runtime(user, bot)
     except Exception:
         cached = None
-    if cached:
-        return cached
+    # Use runtime cache only if it contains series; otherwise fall back to direct snapshot
+    try:
+        if isinstance(cached, dict):
+            series = cached.get('series')
+            if isinstance(series, list) and len(series) > 0:
+                # Merge: use cached series, but ensure open_trades/balance/profit/performance/trades are included
+                base = svc.snapshot(db, user, bot, limit=limit)
+                try:
+                    if isinstance(base, dict):
+                        base['series'] = series
+                        # Prefer cached pairs/timeframes if present
+                        cp = cached.get('pairs')
+                        ct = cached.get('timeframes')
+                        if isinstance(cp, list):
+                            base['pairs'] = cp
+                        if isinstance(ct, list):
+                            base['timeframes'] = ct
+                        return base
+                except Exception:
+                    pass
+                return svc.snapshot(db, user, bot, limit=limit)
+    except Exception:
+        pass
     return svc.snapshot(db, user, bot, limit=limit)
 
 
@@ -72,22 +91,24 @@ def analytics_candles(user_id: int, bot_id: int, pair: str, timeframe: str, limi
         # fall through to parity below
         pass
 
-    # Fallback: Use parity snapshot (reads datadir inside a short-lived container) and extract candles
-    try:
-        res = svc.parity_snapshot(db, user, bot, timeframe=timeframe, limit=limit, pairs=[pair])
-        if isinstance(res, dict):
-            series = res.get('series')
-            if isinstance(series, list) and series:
-                entry = None
-                for s in series:
-                    if isinstance(s, dict) and s.get('pair') == pair and s.get('timeframe') == timeframe:
-                        entry = s
-                        break
-                if entry is None:
-                    entry = series[0]
-                return entry.get('candles', [])
-    except Exception:
-        pass
+    # Fallback: Use parity snapshot only when explicitly enabled
+    allow_parity = os.environ.get("FT_ANALYTICS_PARITY_ENABLED", "false").lower() == "true"
+    if allow_parity:
+        try:
+            res = svc.parity_snapshot(db, user, bot, timeframe=timeframe, limit=limit, pairs=[pair])
+            if isinstance(res, dict):
+                series = res.get('series')
+                if isinstance(series, list) and series:
+                    entry = None
+                    for s in series:
+                        if isinstance(s, dict) and s.get('pair') == pair and s.get('timeframe') == timeframe:
+                            entry = s
+                            break
+                    if entry is None:
+                        entry = series[0]
+                    return entry.get('candles', [])
+        except Exception:
+            pass
     # As a last resort, return empty list (do not bubble an upstream connection error to the client)
     return []
 
@@ -101,6 +122,7 @@ def analytics_snapshot_parity(
     pairs: str | None = None,
     from_ts: int | None = None,
     to_ts: int | None = None,
+    force: bool | None = False,
     current=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -118,6 +140,11 @@ def analytics_snapshot_parity(
             pair_list = [p for p in toks if p]
     except Exception:
         pair_list = None
+    # Only allow parity snapshot when explicitly enabled or forced via query param
+    allow_parity = os.environ.get("FT_ANALYTICS_PARITY_ENABLED", "false").lower() == "true"
+    if not allow_parity and not force:
+        # Return empty series to signal disabled parity snapshot
+        return {"pairs": [], "timeframes": [], "series": []}
     # Use parity snapshot inside docker for maximum strategy fidelity
     return svc.parity_snapshot(
         db,

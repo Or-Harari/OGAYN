@@ -3,16 +3,17 @@ import { useAuth } from '@/stores/auth'
 import { useData } from '@/stores/data'
 import { api } from '@/lib/api'
 import CreateBotForm, { CreateBotFormValues } from '@/components/CreateBotForm'
+import BotControls from '@/components/BotControls'
 import { useUI } from '@/stores/ui'
 import './Bots.css'
 
 // ✅ unified chart + tiny adapters
 import AnalyticsChart from '@/components/chart/AnalyticsChart'
-import { useBacktestData } from '@/components/chart/useBacktestData'
 import LiveAnalyticsContainer from '@/components/chart/LiveAnalyticsContainer'
+import TradesTab from '@/components/TradesTab'
 
 // --- types / helpers moved local (since we removed BackstagePanel import)
-type BackstageSelection = { pair: string | null; timeframe: string | null; timerange: string };
+type BackstageSelection = { pair: string | null; timerange: string };
 
 const cfgPairs = (cfg: any): string[] =>
   Array.isArray(cfg?.pair_whitelist) ? cfg.pair_whitelist
@@ -40,14 +41,8 @@ type BotRuntimeInfo = {
   config_path?: string | null
   strategy?: string | null
   strategy_path?: string | null
-  effective_strategy?: string | null
-  active_strategy?: { name?: string; clazz?: string } | null
-}
+  effective_strategy?: string | null}
 
-export type BotBacktestResults = {
-  trades: any[]
-  summary: { total_trades?: number; winrate?: number; profit_abs_sum?: number; profit_ratio_avg?: number; by_pair?: Record<string, any>; file?: string }
-} 
 
 export function Bots() {
   const userId = useAuth(s => s.userId)
@@ -83,19 +78,16 @@ export function Bots() {
   const [formStrategyName, setFormStrategyName] = useState<string>('')
   const [formStrategyClazz, setFormStrategyClazz] = useState<string>('')
 
-  // Logs and backtest UI state
+  // Logs and UI state
   const [rtTail, setRtTail] = useState<number>(500)
   const [btTail, setBtTail] = useState<number>(500)
   const [runtimeLogs, setRuntimeLogs] = useState<string[]>([])
-  const [backtestLogs, setBacktestLogs] = useState<string[]>([])
   const [btStatus, setBtStatus] = useState<{ state: string; container?: string | null; started_at?: string | null; finished_at?: string | null; exit_code?: number | null } | null>(null)
   const [autoRefreshLogs, setAutoRefreshLogs] = useState<boolean>(false)
-  // Backstage/backtest controls
   const [btTimerange, setBtTimerange] = useState<string>('')
   // New date pickers for backtest window
   const [btFromDate, setBtFromDate] = useState<string>('') // YYYY-MM-DD
   const [btToDate, setBtToDate] = useState<string>('')     // YYYY-MM-DD
-  const [btResults, setBtResults] = useState<BotBacktestResults | null>(null)
   const [btStarting, setBtStarting] = useState<boolean>(false)
   const [btResultsFetchedFor, setBtResultsFetchedFor] = useState<string | null>(null)
   const [btFiles, setBtFiles] = useState<Array<{ file: string; mtime: number; size: number }>>([])
@@ -104,15 +96,28 @@ export function Bots() {
   const [liveTrades, setLiveTrades] = useState<any[]>([])
   const [liveTradesLoading, setLiveTradesLoading] = useState<boolean>(false)
   const [liveTradesError, setLiveTradesError] = useState<string | null>(null)
+  const [liveOpenOrders, setLiveOpenOrders] = useState<any[]>([])
+  const [liveOrdersError, setLiveOrdersError] = useState<string | null>(null)
+  const [liveSubTab, setLiveSubTab] = useState<'trades' | 'orders' | 'history' | 'performance'>('trades')
   const [liveRefreshKey, setLiveRefreshKey] = useState<number>(0)
+  const [livePollSec, setLivePollSec] = useState<number>(1)
+
+  // History & Performance state
+  const [historyTrades, setHistoryTrades] = useState<any[]>([])
+  const [historyLoading, setHistoryLoading] = useState<boolean>(false)
+  const [historyError, setHistoryError] = useState<string | null>(null)
+  const [historyDetails, setHistoryDetails] = useState<Record<string | number, any>>({})
+  const [perfByPair, setPerfByPair] = useState<any[]>([])
+  const [profitSummary, setProfitSummary] = useState<any | null>(null)
+  const [historyResetting, setHistoryResetting] = useState<boolean>(false)
 
   // ✅ Selections
-  const [bsSelection, setBsSelection] = useState<BackstageSelection>({ pair: 'BTC/USDT', timeframe: '5m', timerange: '-30d' })
+  const [bsSelection, setBsSelection] = useState<BackstageSelection>({ pair: 'BTC/USDT', timerange: '-30d' })
   const [livePair, setLivePair] = useState<string | null>(null)
   const [liveTf, setLiveTf] = useState<string | null>(null)
 
   // View tabs under the configuration panel
-  const [viewTab, setViewTab] = useState<'live' | 'backstage'>('live')
+  const [viewTab, setViewTab] = useState<'live'>('live')
   
   // Helpers to persist per-bot UI state
   const viewTabKey = (botId?: number | null) => (botId ? `botViewTab:${botId}` : 'botViewTab')
@@ -157,8 +162,8 @@ export function Bots() {
   useEffect(() => {
     if (!selectedId) return
     try {
-      const vt = localStorage.getItem(viewTabKey(selectedId)) as 'live' | 'backstage' | null
-      if (vt === 'live' || vt === 'backstage') setViewTab(vt)
+      const vt = localStorage.getItem(viewTabKey(selectedId)) as 'live' | null
+      if (vt === 'live') setViewTab(vt)
     } catch {}
     try {
       const raw = localStorage.getItem(bsSelKey(selectedId))
@@ -167,7 +172,6 @@ export function Bots() {
         if (parsed && typeof parsed === 'object') {
           setBsSelection({
             pair: parsed.pair ?? 'BTC/USDT',
-            timeframe: parsed.timeframe ?? '5m',
             timerange: parsed.timerange ?? '-30d',
           })
         }
@@ -200,7 +204,7 @@ export function Bots() {
           const [stRes, rtRes, cfgRes] = await Promise.all([
             api.get(`/users/${userId}/bots/${b.id}/status`),
             api.get(`/users/${userId}/bots/${b.id}/runtime`),
-            api.get(`config/config/bot/${b.id}`),
+            api.get(`/config/bot/${b.id}`),
           ])
           setDetails(prev => ({
             ...prev,
@@ -290,7 +294,7 @@ export function Bots() {
       const [stRes, rtRes, cfgRes] = await Promise.all([
         api.get(`/users/${userId}/bots/${botId}/status`),
         api.get(`/users/${userId}/bots/${botId}/runtime`),
-        api.get(`config/config/bot/${botId}`),
+        api.get(`/config/bot/${botId}`),
       ])
       setDetails(prev => ({
         ...prev,
@@ -399,11 +403,10 @@ export function Bots() {
       }
   await api.patch(`/users/${userId}/bots/${botId}/config`, payload)
       // Strategy update if changed
-      const botAct = (bot as any)?.active_strategy || {}
-      const curName = botAct?.name || ''
-      const curClazz = botAct?.clazz || ''
-      if (formStrategyName !== curName || (formStrategyClazz || '') !== (curClazz || '')) {
-        const body = { active_strategy: { name: formStrategyName || null, clazz: formStrategyClazz || null } }
+      const botAct = (bot as any)?.strategy || ''
+      const curName = botAct || ''
+      if (formStrategyName !== curName) {
+        const body = { strategy: formStrategyName || null }
         await api.patch(`/users/${userId}/bots/${botId}/strategy`, body)
       }
       await refreshBotDetails(botId)
@@ -413,21 +416,7 @@ export function Bots() {
     }
   }
 
-  const fetchLiveTrades = async (botId: number, mode: 'all' | 'live' | 'dryrun' = 'all') => {
-    if (!userId) return
-    setLiveTradesLoading(true)
-    setLiveTradesError(null)
-    try {
-      const res = await api.get(`/users/${userId}/bots/${botId}/trades-history`, { params: { mode, limit: 500 } })
-      const arr = Array.isArray(res.data) ? res.data : []
-      setLiveTrades(arr)
-    } catch (e: any) {
-      setLiveTradesError(extractError(e) || 'Failed to load trades')
-      setLiveTrades([])
-    } finally {
-      setLiveTradesLoading(false)
-    }
-  }
+  // live trades now sourced from snapshot via LiveAnalyticsContainer -> onOpenTrades callback
 
   // Toggle bot run mode (dryrun/live). Disable while running; requires Stop first.
   const handleSetRunMode = async (botId: number, mode: 'dryrun' | 'live') => {
@@ -456,157 +445,271 @@ export function Bots() {
       setRuntimeLogs(lines)
     } catch {}
   }
-  const fetchBacktestStatus = async (botId: number) => {
-    if (!userId) return
-    try {
-      const res = await api.get(`/users/${userId}/bots/${botId}/backtest/status`)
-      setBtStatus(res.data || null)
-    } catch {}
-  }
-  const fetchBacktestResults = async (botId: number, limit = 200) => {
-    if (!userId) return
-    try {
-      const res = await api.get(`/users/${userId}/bots/${botId}/backtest/results`, { params: { limit_trades: limit } })
-      if(res.data){
-        console.log('Backtest results:', res)
-      }
-        setBtResults(res.data || null)
-        // Note: Do NOT set btResultsFetchedFor here. The polling effect will set a stable mark
-        // based on finished_at to avoid re-fetch loops.
-    } catch {}
-  }
-  const fetchBacktestList = async (botId: number) => {
-    if (!userId) return
-    setBtFilesLoading(true)
-    try {
-      const res = await api.get(`/users/${userId}/bots/${botId}/backtest/list`)
-      const items = Array.isArray(res.data?.items) ? res.data.items : []
-      setBtFiles(items)
-    } catch {
-      setBtFiles([])
-    } finally {
-      setBtFilesLoading(false)
-    }
-  }
-  const fetchBacktestResultFile = async (botId: number, file: string, limit = 200) => {
-    if (!userId) return
-    try {
-      const res = await api.get(`/users/${userId}/bots/${botId}/backtest/result`, { params: { file, limit_trades: limit } })
-      setBtResults(res.data || null)
-      setBtResultsFetchedFor(`${botId}:${file}`)
-    } catch {}
-  }
-  const fetchBacktestLogs = async (botId: number, tail = btTail) => {
-    if (!userId) return
-    try {
-      const res = await api.get(`/users/${userId}/bots/${botId}/backtest/logs`, { params: { tail } })
-      const lines: string[] = Array.isArray(res.data?.lines) ? res.data.lines : []
-      setBacktestLogs(lines)
-    } catch {}
-  }
-  const handleRunBacktest = async (botId: number) => {
-    if (!userId) return
-    setBtStarting(true)
-      setBtResults(null)
-      setBtResultsFetchedFor(null) // reset guard so we fetch fresh results when backtest completes
-    try {
-      // Build timerange from date pickers (YYYYMMDD-YYYYMMDD)
-  const toYmd = (iso: string): string => iso ? iso.split('-').join('') : ''
-      const hasFrom = btFromDate && btFromDate.length === 10
-      const hasTo = btToDate && btToDate.length === 10
-      if (!hasFrom || !hasTo) {
-        notifyError('Please select both From and To dates for the backtest')
-        return
-      }
-      const pickTimerange = `${toYmd(btFromDate)}-${toYmd(btToDate)}`
-      const exportName = `backstage-${Date.now()}`
-      // Resolve an effective strategy for the backtest request:
-      // 1) Prefer the currently chosen form fields (not necessarily saved yet)
-      // 2) Fall back to runtime.effective_strategy (composed)
-      // 3) Do not send placeholder values
-      const rawClazz = (formStrategyClazz || '').trim()
-      const rawName = (formStrategyName || '').trim()
-      const runtimeEff = (details[botId]?.runtime?.effective_strategy || details[botId]?.runtime?.strategy || '').trim()
-      const pickFromForm = rawClazz || rawName
-      // Normalize class: strip .py and dotted path, keeping the class name only
-      const normalizeClass = (s: string) => {
-        if (!s) return ''
-        let x = s.replace(/\.py$/i, '')
-        if (x.includes('.')) x = x.split('.').pop() || x
-        return x
-      }
-      let effStrategy = pickFromForm ? normalizeClass(pickFromForm) : normalizeClass(runtimeEff)
-      if (!effStrategy || effStrategy === '__SET_YOUR_STRATEGY__') {
-        effStrategy = undefined as any
-      }
-      const body: any = {
-        strategy: effStrategy,
-        timerange: pickTimerange,
-        export: 'trades',
-        export_filename: exportName,
-      }
-      // When coming from Backstage selection, include pair/timeframe overrides
-  // Do NOT override pair/timeframe here – backtest should run for all whitelisted pairs
-      await api.post(`/users/${userId}/bots/${botId}/backtest`, body)
-      // Status/logs polling loop (existing auto refresh will also pick it up)
-      await fetchBacktestStatus(botId)
-      await fetchBacktestLogs(botId)
-      notifySuccess('Backtest started')
-    } catch (e: any) {
-      notifyError(extractError(e) || 'Failed to start backtest')
-    } finally {
-      setBtStarting(false)
-    }
-  }
 
-  // Stable polling: single lifecycle per run; permanently stop after completion
-  const btStoppedRef = useRef<Record<number, boolean>>({})
+  // Derive open orders directly from snapshot open_trades (via LiveAnalyticsContainer -> onOpenTrades)
   useEffect(() => {
-    if (!selectedId || viewTab !== 'backstage') return
-    if (btStoppedRef.current[selectedId]) return
-
-    let interval: any
-    const finishedAt = btStatus?.finished_at || ''
-    const doneMark = `done:${selectedId}:${finishedAt}`
-    const alreadyFetched = btStatus?.state === 'done' && btResultsFetchedFor === doneMark
-
-    const tick = () => {
-      if (btStatus?.state === 'running') {
-        fetchBacktestStatus(selectedId).catch(()=>{})
-        fetchBacktestLogs(selectedId).catch(()=>{})
-      } else if (btStatus?.state === 'done') {
-        if (!alreadyFetched) {
-          fetchBacktestResults(selectedId).then(() => setBtResultsFetchedFor(doneMark))
+    try {
+      const out: any[] = []
+      const trades = Array.isArray(liveTrades) ? liveTrades : []
+      for (const t of trades) {
+        const tradeId = t?.trade_id ?? t?.id ?? t?.tradeId
+        const orders = Array.isArray(t?.orders) ? t.orders : []
+        for (const o of orders) {
+          const status = String(o?.status ?? o?.order_status ?? '').toLowerCase()
+          const isOpen = status === 'open' || o?.is_open === true
+          if (isOpen) {
+            out.push({ ...o, trade_id: tradeId, pair: o?.pair || t?.pair })
+          }
         }
-        btStoppedRef.current[selectedId] = true
-        if (interval) clearInterval(interval)
+      }
+
+      setLiveOpenOrders(out)
+      setLiveOrdersError(null)
+    } catch {
+      // leave as-is on parse error
+    }
+  }, [liveTrades])
+
+  const cancelOpenOrder = async (botId: number, tradeId: number | string) => {
+    if (!userId || tradeId == null) return
+    try {
+      await api.delete(`/users/${userId}/bots/${botId}/proxy/freqtrade/trades/${tradeId}/open-order`)
+      // Optimistically update UI and force an immediate snapshot refresh
+      setLiveOpenOrders(prev => prev.filter(o => (o?.trade_id ?? o?.tradeId ?? o?.trade) !== tradeId))
+      setLiveRefreshKey(k => k + 1)
+      notifySuccess('Order canceled')
+    } catch (e: any) {
+      notifyError(e?.response?.data?.detail || e?.message || 'Failed to cancel order')
+    }
+  }
+
+  // Trades History & Performance fetchers
+  const fetchTradesHistory = async (botId: number, limit = 500) => {
+    if (!userId || !selected) return
+    setHistoryLoading(true)
+    setHistoryError(null)
+    try {
+      // Use backend route reading SQLite directly; mode follows selected bot mode
+      const mode = String(selected.mode || 'all').toLowerCase()
+      const res = await api.get(`/users/${userId}/bots/${botId}/trades-history`, { params: { mode, limit } })
+      const arr = Array.isArray(res.data) ? res.data : []
+      setHistoryTrades(arr)
+    } catch (e: any) {
+      setHistoryError(extractError(e))
+      setHistoryTrades([])
+    } finally {
+      setHistoryLoading(false)
+    }
+  }
+
+  const loadTradeDetails = async (botId: number, tradeId: number | string) => {
+    if (!userId || tradeId == null) return
+    try {
+      // Normalize id when coming from SQLite (e.g., 'dryrun:123')
+      const tid = (typeof tradeId === 'string' && tradeId.includes(':')) ? (tradeId.split(':').pop() || tradeId) : tradeId
+      const res = await api.get(`/users/${userId}/bots/${botId}/proxy/freqtrade/trade/${tid}`)
+      setHistoryDetails(prev => ({ ...prev, [tradeId]: res.data }))
+    } catch (e) {
+      // keep silent; user can retry
+    }
+  }
+
+  const fetchPerformance = async (botId: number) => {
+    if (!userId) return
+    try {
+      const res = await api.get(`/users/${userId}/bots/${botId}/proxy/freqtrade/performance`)
+      const arr = Array.isArray(res.data) ? res.data : (Array.isArray(res.data?.performance) ? res.data.performance : [])
+      setPerfByPair(arr)
+    } catch (e) {
+      setPerfByPair([])
+    }
+  }
+
+  const fetchProfit = async (botId: number) => {
+    if (!userId) return
+    try {
+      const res = await api.get(`/users/${userId}/bots/${botId}/proxy/freqtrade/profit`)
+      setProfitSummary(res.data || null)
+    } catch (e) {
+      setProfitSummary(null)
+    }
+  }
+
+  const resetDryrunTrades = async (botId: number) => {
+    if (!userId || !selected) return
+    if (String(selected.mode).toLowerCase() !== 'dryrun') {
+      notifyError('Reset is only available in dryrun mode')
+      return
+    }
+    const running = !!details[botId]?.runtime?.running
+    if (running) {
+      notifyError('Stop the bot before resetting dryrun trades')
+      return
+    }
+    const ok = window.confirm('Delete ALL dryrun trades and performance data? This cannot be undone.')
+    if (!ok) return
+    try {
+      setHistoryResetting(true)
+      const res = await api.post(`/users/${userId}/bots/${botId}/dryrun/reset`)
+      const removed = Array.isArray(res.data?.removed) ? res.data.removed : []
+      if (removed.length === 0) {
+        notifyError('Dryrun reset did not remove any DB files. Ensure the bot is stopped and try again.')
+      } else {
+        notifySuccess('Dryrun trades reset')
+      }
+      setHistoryDetails({})
+      await fetchTradesHistory(botId)
+      // Refresh performance summary as well
+      await fetchPerformance(botId)
+      await fetchProfit(botId)
+    } catch (e: any) {
+      notifyError(extractError(e) || 'Failed to reset dryrun trades')
+    } finally {
+      setHistoryResetting(false)
+    }
+  }
+
+  // Fetch history/performance when tab changes
+  useEffect(() => {
+    if (!selected) return
+    if (liveSubTab === 'history') {
+      fetchTradesHistory(selected.id)
+    } else if (liveSubTab === 'performance') {
+      fetchPerformance(selected.id)
+      fetchProfit(selected.id)
+    }
+  }, [liveSubTab, selected?.id])
+
+  // Fallback: derive performance summary from history when API returns empty/zeros
+  useEffect(() => {
+    try {
+      const rows = Array.isArray(historyTrades) ? historyTrades : []
+      if (!rows.length) return
+      // Closed trades only
+      const closed = rows.filter(r => String(r.status || '').toLowerCase() === 'closed' || !!r.close_date)
+      if (!closed.length) return
+      const sumAbs = closed.reduce((acc, r) => acc + Number((r.profit_abs ?? r.close_profit_abs ?? r.realized_profit ?? 0)), 0)
+      const ratios: number[] = closed.map(r => Number((r.profit_ratio ?? r.close_profit ?? 0))).filter(n => !isNaN(n))
+      const avgRatio = ratios.length ? (ratios.reduce((a, b) => a + b, 0) / ratios.length) : 0
+      // Avg duration (ms)
+      const durationsMs: number[] = closed.map(r => {
+        try {
+          const od = r.open_date ? new Date(r.open_date).getTime() : NaN
+          const cd = r.close_date ? new Date(r.close_date).getTime() : NaN
+          return (!isNaN(od) && !isNaN(cd)) ? Math.max(0, cd - od) : NaN
+        } catch {
+          return NaN
+        }
+      }).filter(n => !isNaN(n) && isFinite(n))
+      const avgMs = durationsMs.length ? (durationsMs.reduce((a,b)=>a+b,0) / durationsMs.length) : 0
+      const avgDuration = avgMs ? `${Math.round(avgMs/3600000)}h ${Math.round((avgMs%3600000)/60000)}m` : '-'
+      const derivedSummary = {
+        profit_abs: sumAbs,
+        profit_ratio: avgRatio,
+        total_trades: closed.length,
+        avg_profit_ratio: avgRatio,
+        avg_duration: avgDuration,
+      }
+      // Only update if API summary is missing or zeros
+      const ps = profitSummary
+      const isMissing = !ps
+      if (isMissing) setProfitSummary(derivedSummary)
+      // Derive per-pair performance when API is empty
+      if ((!perfByPair || perfByPair.length === 0)) {
+        const byPair: Record<string, { profit_abs: number; profit_ratio_sum: number; count: number }> = {}
+        for (const r of closed) {
+          const p = String(r.pair || '-')
+          const pa = Number((r.profit_abs ?? r.close_profit_abs ?? r.realized_profit ?? 0)) || 0
+          const pr = Number((r.profit_ratio ?? r.close_profit ?? 0)) || 0
+          byPair[p] = byPair[p] || { profit_abs: 0, profit_ratio_sum: 0, count: 0 }
+          byPair[p].profit_abs += pa
+          byPair[p].profit_ratio_sum += pr
+          byPair[p].count += 1
+        }
+        const derivedPerf = Object.entries(byPair).map(([pair, v]) => ({
+          pair,
+          profit_abs: v.profit_abs,
+          profit_ratio: v.count ? v.profit_ratio_sum / v.count : 0,
+          trades: v.count,
+        }))
+        setPerfByPair(derivedPerf)
+      }
+    } catch {}
+  }, [historyTrades])
+  const closeTrade = async (botId: number, tradeId: number | string, mode: 'market' | 'limit') => {
+    if (!userId || tradeId == null) return
+    try {
+      // Canonical Freqtrade endpoint: POST /api/v1/forceexit
+      // Params: tradeid, ordertype ('market' | 'limit'), [amount]
+      await api.post(`/users/${userId}/bots/${botId}/proxy/freqtrade/forceexit`, {
+        tradeid: tradeId,
+        ordertype: mode,
+      })
+      // Optimistic UI: remove trade from list and refresh snapshot
+      setLiveTrades(prev => prev.filter(t => (t?.trade_id ?? t?.id ?? t?.tradeId) !== tradeId))
+      setLiveRefreshKey(k => k + 1)
+      notifySuccess(`Trade closed by ${mode}`)
+    } catch (e: any) {
+      notifyError(e?.response?.data?.detail || e?.message || `Failed to close trade (${mode})`)
+    }
+  }
+
+  const deleteTrade = async (botId: number, tradeId: number | string) => {
+    if (!userId || tradeId == null) return
+    const ok = window.confirm('Delete this trade from bot state? This cannot be undone.')
+    if (!ok) return
+    const tryPaths: Array<string> = [
+      `/users/${userId}/bots/${botId}/proxy/freqtrade/trades/${tradeId}`,
+      `/users/${userId}/bots/${botId}/proxy/freqtrade/trades/${tradeId}/delete`,
+    ]
+    let lastErr: any = null
+    for (const path of tryPaths) {
+      try {
+        await api.delete(path)
+        setLiveTrades(prev => prev.filter(t => (t?.trade_id ?? t?.id ?? t?.tradeId) !== tradeId))
+        setLiveRefreshKey(k => k + 1)
+        notifySuccess('Trade deleted')
+        return
+      } catch (e: any) {
+        lastErr = e
+        const code = e?.response?.status
+        if (code !== 405 && code !== 404) break
       }
     }
-    // initial tick
-    tick()
-    if (btStatus?.state === 'running') {
-      interval = setInterval(tick, 4000)
+    notifyError(lastErr?.response?.data?.detail || lastErr?.message || 'Failed to delete trade')
+  }
+
+  const closeAllTrades = async (botId: number, mode: 'market' | 'limit') => {
+    if (!userId) return
+    const ok = window.confirm(`Close ALL open trades by ${mode}?`)
+    if (!ok) return
+    try {
+      // Canonical bulk-close: POST /api/v1/forceexit with tradeid='all'
+      await api.post(`/users/${userId}/bots/${botId}/proxy/freqtrade/forceexit`, {
+        tradeid: 'all',
+        ordertype: mode,
+      })
+      setLiveTrades([])
+      setLiveRefreshKey(k => k + 1)
+      notifySuccess(`All trades closed by ${mode}`)
+    } catch (e: any) {
+      notifyError(e?.response?.data?.detail || e?.message || `Failed to close all trades (${mode})`)
     }
-    return () => { if (interval) clearInterval(interval) }
-  }, [selectedId, viewTab, btStatus?.state, btStatus?.finished_at, btResultsFetchedFor])
+  }
+
+
+  // Backstage polling removed per revert
 
   // Reset backtest UI bits when switching selection
   useEffect(() => {
     setBtTimerange('')
-    setBtResults(null)
     setBtResultsFetchedFor(null)
     setBtStarting(false)
     setBtFromDate('')
     setBtToDate('')
   }, [selectedId])
 
-  // When entering Backstage tab, fetch latest backtest results once
-  useEffect(() => {
-    if (!selectedId || viewTab !== 'backstage') return
-    if (!btResults) {
-      fetchBacktestResults(selectedId).catch(() => {})
-    }
-  }, [viewTab, selectedId])
+  // Backstage auto-fetch removed per revert
 
   // ✅ init live/backstage selections when bot/config available
   useEffect(() => {
@@ -628,126 +731,12 @@ export function Bots() {
 
     setBsSelection(prev => ({
       pair: prev?.pair ?? ps[0],
-      timeframe: prev?.timeframe ?? tfs[0],
       timerange: prev?.timerange ?? '-30d',
     }))
   }, [selected?.id, details[selected?.id || -1]?.config])
 
-  // ✅ normalized data for unified chart
-  // Live data is handled inside LiveAnalyticsContainer to keep a single WS connection.
-
-  const backtestData = useBacktestData({
-    userId: userId as number,
-    botId: selected?.id as number,
-    pair: bsSelection.pair || '',
-    timeframe: bsSelection.timeframe || '',
-    timerange: bsSelection.timerange || '-30d',
-  enabled: viewTab === 'backstage' && !!btResults && btStatus?.state === 'done',
-    ...(() => {
-      // Compute precise candle window from selected backtest trades (for the chosen pair), capped to ~1 year
-      const trades = btResults?.trades || []
-      const selPair = bsSelection.pair || ''
-      const tf = (bsSelection.timeframe || '5m').toLowerCase()
-
-      const tfToSec = (s: string): number => {
-        const m = s.match(/^(\d+)([mhdw])$/i)
-        if (!m) return 300
-        const n = parseInt(m[1], 10)
-        const unit = m[2].toLowerCase()
-        if (unit === 'm') return n * 60
-        if (unit === 'h') return n * 3600
-        if (unit === 'd') return n * 86400
-        if (unit === 'w') return n * 7 * 86400
-        return 300
-      }
-      const toSec = (v: any): number | undefined => {
-        if (v == null) return undefined
-        if (typeof v === 'number') return v > 1e12 ? Math.floor(v / 1000) : Math.floor(v)
-        const ms = Date.parse(String(v))
-        return Number.isFinite(ms) ? Math.floor(ms / 1000) : undefined
-      }
-
-      const relevant = trades.filter(t => !selPair || String(t?.pair) === selPair)
-      let minS: number | undefined
-      let maxS: number | undefined
-      for (const t of relevant) {
-        const o = toSec(t?.open_timestamp) ?? toSec(t?.open_date)
-        const c = toSec(t?.close_timestamp) ?? toSec(t?.close_date)
-        const a = [o, c].filter((x): x is number => typeof x === 'number')
-        for (const s of a) {
-          if (minS == null || s < minS) minS = s
-          if (maxS == null || s > maxS) maxS = s
-        }
-      }
-      const tfSec = tfToSec(tf)
-      const pad = Math.max(tfSec * 50, 0) // add ~50 candles padding on both sides
-      const YEAR = 366 * 86400
-
-      if (minS != null && maxS != null && maxS >= minS) {
-        let fromTs = Math.max(0, minS - pad)
-        let toTs = maxS + pad
-        // Cap to ~1 year window ending at toTs
-        if (toTs - fromTs > YEAR) {
-          fromTs = Math.max(0, toTs - YEAR)
-        }
-        // Compute a matching limit with small margin, minimum 200
-        const limit = Math.max(200, Math.ceil((toTs - fromTs) / tfSec) + 20)
-        return { limit, fromTs, toTs }
-      }
-      // Fallback: compute from timerange if possible to get a tighter limit
-      try {
-        const tr = (bsSelection.timerange || '').trim()
-        const m = tr.match(/^(\d{8})-(\d{8})?$/)
-        if (m) {
-          const parseYmd = (s: string): number => {
-            const y = parseInt(s.slice(0, 4), 10)
-            const mo = parseInt(s.slice(4, 6), 10) - 1
-            const d = parseInt(s.slice(6, 8), 10)
-            return Math.floor(Date.UTC(y, mo, d) / 1000)
-          }
-          const fromTs = parseYmd(m[1])
-          const toTs = m[2] ? (parseYmd(m[2]) + 86399) : Math.floor(Date.now() / 1000)
-          const span = Math.min(YEAR, Math.max(0, toTs - fromTs))
-          const limit = Math.max(200, Math.ceil(span / tfSec) + 20)
-          return { limit, fromTs, toTs }
-        }
-      } catch {}
-      // Default
-      return { limit: 3000 as number }
-    })(),
-  })
-
-    // Coerce Backstage selection to valid pairs/timeframes when results or config change
-    useEffect(() => {
-      if (!selected) return
-      const cfg = details[selected.id]?.config || {}
-      const cfgPs = cfgPairs(cfg)
-      const byPair = btResults?.summary?.by_pair || null
-      const ps = byPair ? Object.keys(byPair) : cfgPs
-      const tfs = cfgTimeframes(cfg)
-      // Prefer timeframe from backtest results when available
-      const btTf = (btResults?.summary as any)?.timeframe as string | undefined
-      if (!ps.length || !tfs.length) return
-      setBsSelection(prev => {
-        const cur = prev || { pair: null as any, timeframe: null as any, timerange: '-30d' }
-        const nextPair = cur.pair && ps.includes(cur.pair) ? cur.pair : ps[0]
-        // If backtest timeframe is known, prefer it; otherwise coerce to first configured timeframe
-        const desiredTf = btTf && typeof btTf === 'string' ? btTf : tfs[0]
-        const nextTf = desiredTf
-        if (cur.pair === nextPair && cur.timeframe === nextTf) return cur
-        return { ...cur, pair: nextPair, timeframe: nextTf, timerange: cur.timerange || '-30d' }
-      })
-    }, [selected?.id, btResults, details[selected?.id || -1]?.config])
-
-    // Filter trades from backtest results to the selected pair (Backstage)
-    const backstageTrades = useMemo(() => {
-      const all = btResults?.trades || []
-      const p = bsSelection.pair
-      return p ? all.filter(t => String(t?.pair) === p) : all
-    }, [btResults?.trades, bsSelection.pair])
-
   return (
-    <div>
+    <div >
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
         <h2 style={{ margin: 0 }}>Bots</h2>
         <button
@@ -820,33 +809,6 @@ export function Bots() {
                     </>
                   )
                 })()}
-              </div>
-              <div className='details-bot' style={{ display: 'grid', gridTemplateColumns: '160px 1fr', rowGap: 6 }}>
-                {/* Hide raw mode when backend reports 'backstage' to avoid confusion */}
-                {selected.mode && selected.mode !== 'backstage' ? (
-                  <>
-                    <div><strong>Mode</strong></div><div>{selected.mode}</div>
-                  </>
-                ) : null}
-                {/* Live runtime/status from backend */}
-                <div><strong>Status</strong></div><div>{details[selected.id]?.status?.status ?? selected.status}</div>
-                <div><strong>PID</strong></div><div>{details[selected.id]?.status?.pid ?? selected.pid ?? '-'}</div>
-                <div><strong>Container</strong></div><div>{details[selected.id]?.status?.container ?? '-'}</div>
-      
-                {/* Config summary */}
-                <div><strong>Strategy</strong></div>
-                {(() => {
-                  const cfgStrat = String(details[selected.id]?.config?.strategy ?? '').trim()
-                  const activeName = selected.active_strategy?.name || ''
-                  const activeClazz = selected.active_strategy?.clazz || ''
-                  const runtimeEff = String(details[selected.id]?.runtime?.effective_strategy ?? '').trim()
-                  const display = cfgStrat || activeName || activeClazz || runtimeEff || '-'
-                  return <div>{display}</div>
-                })()}
-                <div><strong>Trading Mode</strong></div><div>{String(details[selected.id]?.config?.trading_mode ?? '-')}</div>
-                <div><strong>Stake Currency</strong></div><div>{String(details[selected.id]?.config?.stake_currency ?? '-')}</div>
-                <div><strong>Pairs</strong></div>
-                <div>{Array.isArray(details[selected.id]?.config?.pairs) ? (details[selected.id]?.config?.pairs as string[]).join(', ') : '-'}</div>
               </div>
               {/* Configuration editor */}
               <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #e5e7eb' }}>
@@ -942,8 +904,7 @@ export function Bots() {
               {/* Analytics tabbed view */}
               <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #e5e7eb' }}>
                 <div style={{ display: 'flex', gap: 8, marginBottom: 10, borderBottom: '1px solid #e5e7eb' }}>
-                  <button onClick={() => setViewTab('live')} style={{ padding: '6px 10px', borderRadius: '6px 6px 0 0', border: '1px solid #e5e7eb', borderBottom: viewTab==='live' ? '2px solid #3b82f6' : '1px solid #e5e7eb', background: viewTab==='live' ? '#f0f7ff' : '#fff' }}>Live/Dryrun</button>
-                  <button onClick={() => setViewTab('backstage')} style={{ padding: '6px 10px', borderRadius: '6px 6px 0 0', border: '1px solid #e5e7eb', borderBottom: viewTab==='backstage' ? '2px solid #3b82f6' : '1px solid #e5e7eb', background: viewTab==='backstage' ? '#f0f7ff' : '#fff' }}>Backstage</button>
+                  <button style={{ padding: '6px 10px', borderRadius: '6px 6px 0 0', border: '1px solid #e5e7eb', borderBottom: '2px solid #3b82f6', background: '#f0f7ff' }}>Live/Dryrun</button>
                 </div>
 
                 {viewTab === 'live' && (
@@ -991,19 +952,15 @@ export function Bots() {
                                 {stopping ? 'Stopping…' : 'Stop'}
                               </button>
                             )}
-                            <button
-                              onClick={() => setLiveRefreshKey(k => k + 1)}
-                              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #6b7280', background: '#fff' }}
-                            >
-                              Refresh Candles
-                            </button>
-                            <button
-                              onClick={() => fetchLiveTrades(selected.id, 'all')}
-                              disabled={liveTradesLoading}
-                              style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #2563eb', background: liveTradesLoading ? '#dbeafe' : '#2563eb', color: '#fff' }}
-                            >
-                              {liveTradesLoading ? 'Refreshing…' : 'Refresh Trades'}
-                            </button>
+                            {/* Polling interval selector for live updates */}
+                            <div style={{ display: 'inline-flex', gap: 6, alignItems: 'center', border: '1px solid #e5e7eb', borderRadius: 6, padding: '2px 4px' }}>
+                              <label style={{ fontSize: 12, color: '#374151' }}>Update:</label>
+                              <select value={livePollSec} onChange={(e) => setLivePollSec(Number(e.target.value))} style={{ padding: '4px 6px', borderRadius: 6, border: '1px solid #e5e7eb' }}>
+                                {[1,5,10,30].map(sec => <option key={sec} value={sec}>{sec}s</option>)}
+                              </select>
+                            </div>
+                            {/* Freqtrade bot controls */}
+                            <BotControls userId={userId!} botId={selected.id} />
                           </div>
                         )
                       })()}
@@ -1015,18 +972,17 @@ export function Bots() {
                       // Live tab: show configured pairs from bot config
                       const ps = cfgPairs(cfg)
                       const tfs = liveTf
-                      
                       const PairTabs = (
                         ps.length > 1 && (
                           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-                            {ps.map(p => (
+                            {ps.map((p: string) => (
                               <button key={p}
-                                onClick={() => setLivePair(p)}
+                                onClick={() => { setLivePair(p); }}
                                 style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: livePair === p ? '#eef2ff' : '#fff', cursor: 'pointer' }}>
                                 {p}
                               </button>
                             ))}
-                              </div>
+                          </div>
                         )
                       )
 
@@ -1051,145 +1007,57 @@ export function Bots() {
                         </>
                       )
                     })()}
-
-                                <LiveAnalyticsContainer
-                                  key={liveRefreshKey}
-                                  userId={userId ?? undefined}
-                                  botId={selected.id}
-                                  pair={livePair ?? undefined}
-                                  timeframe={liveTf ?? undefined}
-                                  showSelectors={false}
-                                  enabled={!!details[selected.id]?.runtime?.running}
-                                />
-
-                  </div>
-                )}
-
-                {viewTab === 'backstage' && (
-                  <div>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>
-                      <h4 style={{ margin: '0 0 8px 0' }}>Backstage (Parity Snapshot)</h4>
-                      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                        <label><strong>Backtest dates</strong></label>
-                        <input type="date" value={btFromDate} onChange={(e) => setBtFromDate(e.target.value)} style={{ padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-                        <span>to</span>
-                        <input type="date" value={btToDate} onChange={(e) => setBtToDate(e.target.value)} style={{ padding: 6, borderRadius: 6, border: '1px solid #e5e7eb' }} />
-                        <button onClick={() => handleRunBacktest(selected.id)} disabled={btStarting} style={{ padding: '6px 10px', borderRadius: 6, border: '1px solid #2563eb', background: btStarting ? '#dbeafe' : '#2563eb', color: '#fff' }}>{btStarting ? 'Starting…' : 'Start Backtest'}</button>
-                      </div>
-                    </div>
-
-                    {/* Backstage selectors */}
-                    {(() => {
-                      const cfg = details[selected.id]?.config || {}
-                      // Restrict Backstage pair tabs to those present in the selected backtest result when available
-                      const byPair = btResults?.summary?.by_pair || null
-                      const ps = byPair ? Object.keys(byPair) : cfgPairs(cfg)
-                      const tfs = cfgTimeframes(cfg)
-
-                      const PairTabs = (
-                        ps.length > 0 && (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
-                            {ps.map(p => (
-                              <button key={p}
-                                onClick={() => setBsSelection(s => ({ ...s, pair: p }))}
-                                style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: bsSelection.pair === p ? '#eef2ff' : '#fff', cursor: 'pointer' }}>
-                                {p}
-                              </button>
-                            ))}
-                          </div>
-                        )
-                      )
-
-                      // Remove timeframe selector from Backstage panel – timeframe is controlled via Configuration
-                      const TfTabs = (
-                        tfs.length > 0 ? (
-                          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
-                            Timeframe: {tfs[0]}
-                          </div>
-                        ) : (
-                          <div style={{ fontSize: 12, color: '#dc2626', marginBottom: 6 }}>
-                            No timeframe configured
-                          </div>
-                        )
-                      )
-
-                      return (
-                        <>
-                          {PairTabs}
-                          {TfTabs}
-                          {/* Timerange input removed – using date pickers in the Backtest header */}
-                          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 6 }}>
-                            {bsSelection.pair && bsSelection.timeframe ? `${bsSelection.pair} · ${bsSelection.timeframe}` : ''}
-                          </div>
-                        </>
-                      )
-                    })()}
-
-                    {/* Loading overlays for chart */}
-                    {(() => {
-                      const running = btStatus?.state && btStatus.state !== 'done' && btStatus.state !== 'idle'
-                      const fetching = btStatus?.state === 'done' && !btResults
-                      if (!running && !fetching) return null
-                      return (
-                        <div style={{ padding: 8, marginBottom: 8, color: '#374151', background: '#f3f4f6', border: '1px solid #e5e7eb', borderRadius: 6 }}>
-                          {running ? 'Backtest running…' : 'Fetching latest results…'}
-                        </div>
-                      )
-                    })()}
-
-                    <AnalyticsChart
-                      candles={backtestData.candles}
-                      indicators={backtestData.indicators}
-                      signals={backtestData.signals}
-                      trades={(btResults ? backstageTrades : backtestData.trades)}
-                      showOscPane
-                      height={420}
-                      oscHeight={160}
+  
+  <div>{details[selected.id]!==null? details[selected.id]?.runtime?.running?.toString() : null}</div>
+  
+  
+       
+       {/* Chart */}
+                    <LiveAnalyticsContainer
+                      key={liveRefreshKey}
+                      userId={userId ?? undefined}
+                      botId={selected.id}
+                      pair={livePair ?? undefined}
+                      timeframe={liveTf ?? undefined}
+                      showSelectors={false}
+                      enabled={!!details[selected.id]?.runtime?.running}
+                      pollingSec={livePollSec}
+                      onOpenTrades={(t) => setLiveTrades(Array.isArray(t) ? t : [])}
                     />
 
-                    {/* Live Trades Table */}
-                    <div style={{ marginTop: 12 }}>
-                      <h5 style={{ margin: '0 0 6px 0' }}>Recent Trades ({liveTrades.length})</h5>
-                      {liveTradesError && <div style={{ color: '#dc2626', marginBottom: 6 }}>{liveTradesError}</div>}
-                      {liveTrades.length === 0 && !liveTradesLoading && <div style={{ fontSize: 12, color: '#6b7280' }}>No trades yet or not fetched.</div>}
-                      {liveTrades.length > 0 && (
-                        <div style={{ maxHeight: 260, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 6 }}>
-                          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 12 }}>
-                            <thead>
-                              <tr>
-                                <th style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Pair</th>
-                                <th style={{ textAlign: 'right', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Open Time</th>
-                                <th style={{ textAlign: 'right', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Close Time</th>
-                                <th style={{ textAlign: 'right', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Profit Ratio</th>
-                                <th style={{ textAlign: 'right', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Profit Abs</th>
-                                <th style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Status</th>
-                                <th style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Reason</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {liveTrades
-                                .filter(t => !livePair || String(t?.pair) === livePair)
-                                .slice(-100)
-                                .reverse()
-                                .map((t, idx) => (
-                                  <tr key={idx}>
-                                    <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>{t.pair || '-'}</td>
-                                    <td style={{ padding: 6, textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>{t.open_date ? new Date(t.open_date).toLocaleString() : '-'}</td>
-                                    <td style={{ padding: 6, textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>{t.close_date ? new Date(t.close_date).toLocaleString() : '-'}</td>
-                                    <td style={{ padding: 6, textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>{(Number(t.profit_ratio || 0)).toFixed(4)}</td>
-                                    <td style={{ padding: 6, textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>{(Number(t.profit_abs || 0)).toFixed(4)}</td>
-                                    <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>{t.status || '-'}</td>
-                                    <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>{t.sell_reason || '-'}</td>
-                                  </tr>
-                                ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </div>
+                  <TradesTab
+                    setLiveSubTab={setLiveSubTab}
+                    cancelOpenOrder={cancelOpenOrder}
+                    selected={selected}
+                    liveTrades={liveTrades}
+                    liveTradesError={liveTradesError}
+                    liveSubTab={liveSubTab}
+                    liveTradesLoading={liveTradesLoading}
+                    liveOpenOrders={liveOpenOrders}
+                    liveOrdersError={liveOrdersError}
+                    setLiveRefreshKey={setLiveRefreshKey}
+                    closeTrade={closeTrade}
+                    deleteTrade={deleteTrade}
+                    closeAllTrades={closeAllTrades}
+                    historyTrades={historyTrades}
+                    historyLoading={historyLoading}
+                    historyError={historyError}
+                    historyDetails={historyDetails}
+                    loadTradeDetails={loadTradeDetails}
+                    resetDryrunTrades={resetDryrunTrades}
+                    historyResetting={historyResetting}
+                    perfByPair={perfByPair}
+                    profitSummary={profitSummary}
+                  />
                   </div>
+
+                  
                 )}
+
+                {/* Backstage tab removed per revert */}
               </div>
+
+              
 
               {/* Runtime Logs */}
               <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #e5e7eb' }}>
@@ -1209,98 +1077,6 @@ export function Bots() {
                 <pre style={{ background: '#0b1020', color: '#d1d5db', padding: 8, borderRadius: 8, maxHeight: 240, overflow: 'auto' }}>
                   {runtimeLogs.length ? runtimeLogs.join('\n') : 'No logs yet.'}
                 </pre>
-              </div>
-
-              {/* Backtest Status & Logs */}
-              <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #e5e7eb' }}>
-                <h4 style={{ margin: '0 0 8px 0' }}>Backtest</h4>
-                <div style={{ display: 'grid', gridTemplateColumns: '160px 1fr', rowGap: 6 }}>
-                  <div><strong>Status</strong></div><div>{btStatus?.state ?? 'idle'}</div>
-                  <div><strong>Container</strong></div><div>{btStatus?.container ?? '-'}</div>
-                  <div><strong>Started</strong></div><div>{btStatus?.started_at ?? '-'}</div>
-                  <div><strong>Finished</strong></div><div>{btStatus?.finished_at ?? '-'}</div>
-                  <div><strong>Exit Code</strong></div><div>{btStatus?.exit_code ?? '-'}</div>
-                </div>
-                <div style={{ display: 'flex', gap: 8, alignItems: 'center', margin: '8px 0', flexWrap: 'wrap' }}>
-                  <label>Tail:</label>
-                  {[200, 500, 1000].map(n => (
-                    <button key={n} onClick={() => { setBtTail(n); fetchBacktestLogs(selected.id, n) }}
-                      style={{ padding: '4px 8px', borderRadius: 6, border: btTail === n ? '2px solid #3b82f6' : '1px solid #e5e7eb', background: btTail === n ? '#eef2ff' : '#fff' }}>{n}</button>
-                  ))}
-                  <button onClick={() => { fetchBacktestStatus(selected.id); fetchBacktestLogs(selected.id) }} style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff' }}>Refresh</button>
-                  <button onClick={() => fetchBacktestResults(selected.id)}>Fetch Latest Results</button>
-                  <button onClick={() => fetchBacktestList(selected.id)} disabled={btFilesLoading}>{btFilesLoading ? 'Loading list…' : 'List Results'}</button>
-                </div>
-                {btFiles.length > 0 && (
-                  <div style={{ margin: '8px 0' }}>
-                    <div style={{ fontWeight: 600, marginBottom: 6 }}>Available Results</div>
-                    <div style={{ maxHeight: 160, overflow: 'auto', border: '1px solid #e5e7eb', borderRadius: 6 }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
-                        <thead>
-                          <tr>
-                            <th style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #e5e7eb' }}>File</th>
-                            <th style={{ textAlign: 'right', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Size</th>
-                            <th style={{ textAlign: 'left', padding: 6, borderBottom: '1px solid #e5e7eb' }}>Modified</th>
-                            <th style={{ padding: 6, borderBottom: '1px solid #e5e7eb' }}></th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {btFiles.map((f, idx) => (
-                            <tr key={idx}>
-                              <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>{f.file}</td>
-                              <td style={{ padding: 6, textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>{(f.size/1024).toFixed(1)} KB</td>
-                              <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>{new Date(f.mtime * 1000).toLocaleString()}</td>
-                              <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>
-                                <button onClick={() => fetchBacktestResultFile(selected.id, f.file)} style={{ padding: '4px 8px', borderRadius: 6, border: '1px solid #e5e7eb', background: '#fff' }}>Load</button>
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
-                <pre style={{ background: '#0b1020', color: '#d1d5db', padding: 8, borderRadius: 8, maxHeight: 240, overflow: 'auto' }}>
-                  {backtestLogs.length ? backtestLogs.join('\n') : 'No backtest logs yet.'}
-                </pre>
-                {btResults && (
-                  <div style={{ marginTop: 12 }}>
-                    <h5 style={{ margin: '8px 0' }}>Results Summary</h5>
-                    <div style={{ display: 'grid', gridTemplateColumns: '200px 1fr', rowGap: 6 }}>
-                      <div>'summary', {JSON.stringify(btResults.summary)}</div>
-                      <div><strong>Total trades</strong></div><div>{btResults?.summary?.total_trades ?? 0}</div>
-                      <div><strong>Winrate</strong></div><div>{((btResults.summary?.winrate ?? 0) * 100).toFixed(1)}%</div>
-                      <div><strong>PnL (abs)</strong></div><div>{(btResults.summary?.profit_abs_sum ?? 0).toFixed(4)}</div>
-                      <div><strong>Avg Profit Ratio</strong></div><div>{(btResults.summary?.profit_ratio_avg ?? 0).toFixed(4)}</div>
-                      <div><strong>File</strong></div><div>{btResults.summary?.file ?? '-'}</div>
-                    </div>
-                    <h5 style={{ margin: '12px 0 6px 0' }}>Latest Trades</h5>
-                    <div style={{ overflowX: 'auto' }}>
-                      <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                        <thead>
-                          <tr>
-                            <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 6 }}>Pair</th>
-                            <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', padding: 6 }}>Profit Ratio</th>
-                            <th style={{ textAlign: 'right', borderBottom: '1px solid #e5e7eb', padding: 6 }}>Profit Abs</th>
-                            <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 6 }}>Status</th>
-                            <th style={{ textAlign: 'left', borderBottom: '1px solid #e5e7eb', padding: 6 }}>Reason</th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {(btResults.trades || []).map((t, idx) => (
-                            <tr key={idx}>
-                              <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>{t.pair || '-'}</td>
-                              <td style={{ padding: 6, textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>{(Number(t.profit_ratio || 0)).toFixed(4)}</td>
-                              <td style={{ padding: 6, textAlign: 'right', borderBottom: '1px solid #f3f4f6' }}>{(Number(t.profit_abs || 0)).toFixed(4)}</td>
-                              <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>{t.status || '-'}</td>
-                              <td style={{ padding: 6, borderBottom: '1px solid #f3f4f6' }}>{t.sell_reason || '-'}</td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </div>
-                )}
               </div>
               {/* Errors / Loading */}
               {details[selected.id]?.status?.last_error && (
