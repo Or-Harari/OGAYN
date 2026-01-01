@@ -218,6 +218,12 @@ def get_bot_balance(user_id: int, bot_id: int, current=Depends(get_current_user)
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
     status_code, payload = proxy_freqtrade_api(bot, "GET", "/balance")
+    # Remap upstream 401 (Freqtrade API auth) to 403 so the frontend doesn't log out.
+    if status_code == status.HTTP_401_UNAUTHORIZED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+            "error": "Bot balance unavailable: Freqtrade API unauthorized",
+            "hint": "Ensure the bot is running and api_server credentials match",
+        })
     if status_code >= 400:
         raise HTTPException(status_code=status_code, detail=payload)
     return payload
@@ -329,6 +335,12 @@ async def proxy_freqtrade(user_id: int, bot_id: int, full_path: str, request: Re
         raw_body=raw_body,
         headers=dict(request.headers),
     )
+    # Avoid frontend logout loops: remap upstream 401 to 403
+    if status_code == status.HTTP_401_UNAUTHORIZED:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+            "error": f"Freqtrade API unauthorized for path '{full_path}'",
+            "hint": "Ensure bot is running and api_server credentials match",
+        })
     if status_code >= 400:
         raise HTTPException(status_code=status_code, detail=payload)
     return payload

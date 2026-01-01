@@ -4,11 +4,12 @@ import { useAuth } from '@/stores/auth'
 import { useData } from '@/stores/data'
 import { LoginForm } from '@/components/LoginForm'
 import { Navigation } from '@/components/Navigation'
-import { Overview } from '@/pages/Overview'
+import { Dashboard } from '@/pages/Dashboard'
 import { Bots } from '@/pages/Bots'
 import Toaster from '@/components/Toaster'
 import { BacktestConfig } from './BacktestConfig'
 import { Settings } from './Settings'
+import { RequireAuth } from '@/components/RequireAuth'
 
 export default function App() {
   const token = useAuth((s) => s.token)
@@ -23,13 +24,13 @@ export default function App() {
   return (
     <BrowserRouter>
       <Toaster />
-      <Navigation />
+      {token ? <Navigation /> : null}
       <div className="main-wrap">
         <Routes>
-          <Route path="/" element={<Overview />} />
-          <Route path="/bots" element={<Bots />} />
-          <Route path="/backtest" element={<BacktestConfig />} />
-          <Route path="/settings" element={<Settings />} />
+          <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
+          <Route path="/bots" element={<RequireAuth><Bots /></RequireAuth>} />
+          <Route path="/backtest" element={<RequireAuth><BacktestConfig /></RequireAuth>} />
+          <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
           <Route path="/login" element={<LoginForm />} />
         </Routes>
       </div>

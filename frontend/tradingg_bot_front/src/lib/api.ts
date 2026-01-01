@@ -23,3 +23,25 @@ export function setAuthToken(token: string | null) {
 // restore token on load
 const existing = localStorage.getItem('auth_token')
 if (existing) setAuthToken(existing)
+
+// Global response interceptor: on 401/403, clear token and redirect to login
+api.interceptors.response.use(
+  (resp) => resp,
+  (error) => {
+    const status = error?.response?.status
+    // Only treat 401 (unauthenticated) as a reason to log out and redirect.
+    if (status === 401) {
+      try {
+        setAuthToken(null)
+      } catch {}
+      try {
+        // Preserve current location in query for optional return-after-login
+        const loc = typeof window !== 'undefined' ? window.location.pathname + window.location.search : ''
+        const loginUrl = '/login' + (loc && loc !== '/login' ? `?next=${encodeURIComponent(loc)}` : '')
+        if (typeof window !== 'undefined') window.location.assign(loginUrl)
+      } catch {}
+    }
+    // 403 (forbidden) should not force logout; callers can handle per-view.
+    return Promise.reject(error)
+  }
+)

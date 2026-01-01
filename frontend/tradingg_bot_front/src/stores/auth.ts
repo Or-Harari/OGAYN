@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import { api, setAuthToken } from '@/lib/api'
+import { decodeJwtPayload } from '@/lib/jwt'
 
 interface AuthState {
   token: string | null
@@ -13,13 +14,9 @@ export const useAuth = create<AuthState>((set) => ({
   token: localStorage.getItem('auth_token'),
   userId: ((): number | null => {
     const t = localStorage.getItem('auth_token')
-    if (!t) return null
-    try {
-      const [, payload] = t.split('.')
-      const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
-      const sub = json?.sub
-      return sub ? Number(sub) : null
-    } catch { return null }
+    const payload = decodeJwtPayload(t)
+    const sub = payload?.sub
+    return sub ? Number(sub) : null
   })(),
   setToken: (t: string | null) => set(() => ({ token: t })),
   async login(email: string, password: string) {
@@ -32,12 +29,9 @@ export const useAuth = create<AuthState>((set) => ({
     const token = res.data?.access_token as string
     setAuthToken(token)
     let userId: number | null = null
-    try {
-      const [, payload] = token.split('.')
-      const json = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/')))
-      const sub = json?.sub
-      userId = sub ? Number(sub) : null
-    } catch {}
+    const payload = decodeJwtPayload(token)
+    const sub = payload?.sub
+    userId = sub ? Number(sub) : null
     set(() => ({ token, userId }))
     // Decode or fetch user; here we skip and let user select later or store separately
   },

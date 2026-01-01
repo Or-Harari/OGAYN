@@ -3,6 +3,7 @@ import { useForm } from 'react-hook-form'
 import { z } from 'zod'
 import { zodResolver } from '@hookform/resolvers/zod'
 import { useAuth } from '@/stores/auth'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 const schema = z.object({
   email: z.string().email(),
@@ -16,10 +17,19 @@ export function LoginForm() {
     resolver: zodResolver(schema),
   })
   const login = useAuth((s) => s.login)
+  const navigate = useNavigate()
+  const location = useLocation()
 
   return (
     <form onSubmit={handleSubmit(async v => {
       await login(v.email, v.password)
+      try {
+        const params = new URLSearchParams(location.search)
+        const next = params.get('next')
+        navigate(next || '/', { replace: true })
+      } catch {
+        navigate('/', { replace: true })
+      }
     })}>
       <div className="form-row">
         <label>Email</label>

@@ -7,7 +7,7 @@ body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Ubuntu, Cantarel
 .main { display: grid; grid-template-columns: 320px 1fr; gap: 12px; padding: 12px; }
 .sidebar { border-right: 1px solid #e3e3e3; padding-right: 12px; }
 .content { padding-left: 12px; }
-.main-wrap { margin-left: 220px; padding: 16px; }
+.main-wrap { padding: 16px; }
 
 .form-row { display: flex; flex-direction: column; gap: 6px; margin-bottom: 12px; }
 .input { padding: 8px 10px; border: 1px solid #ccc; border-radius: 6px; }
