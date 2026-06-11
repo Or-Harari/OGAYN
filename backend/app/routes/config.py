@@ -198,6 +198,44 @@ def list_backtest_strategies(current=Depends(get_current_user)) -> dict:
     return {"strategies": uniq}
 
 
+@router.get("/user/strategies")
+def list_user_strategies(current=Depends(get_current_user)) -> dict:
+    """List available strategy class names from the current user's strategies folder.
+
+    Scans <workspace_root>/strategies for Python files and extracts classes inheriting IStrategy.
+    Falls back to filenames when class matches are not found.
+    """
+    from pathlib import Path
+    strategies_dir = Path(current.workspace_root) / "strategies"
+    if not strategies_dir.exists():
+        # Older layout fallback
+        legacy = Path(current.workspace_root) / "user" / "strategies"
+        strategies_dir = legacy if legacy.exists() else strategies_dir
+    if not strategies_dir.exists():
+        return {"strategies": []}
+    names: list[str] = []
+    try:
+        for p in strategies_dir.glob("**/*.py"):
+            try:
+                text = p.read_text(encoding="utf-8")
+            except Exception:
+                continue
+            matches = re.findall(r"class\s+(\w+)\s*\(\s*IStrategy\s*\)", text)
+            if matches:
+                names.extend(matches)
+            else:
+                names.append(p.stem)
+    except Exception:
+        pass
+    seen = set()
+    uniq = []
+    for n in names:
+        if n not in seen:
+            uniq.append(n)
+            seen.add(n)
+    return {"strategies": uniq}
+
+
 @router.get("/backtest")
 def get_backtest_config(current=Depends(get_current_user)):
     import json

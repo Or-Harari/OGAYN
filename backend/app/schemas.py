@@ -104,6 +104,8 @@ class BotConfigPatch(BaseModel):
     leverage: int | None = None
     dry_run_wallet: Union[float, Dict[str, float], None] = None  # allow overriding simulated wallet balance
     strategy: str | None = None  # single source of truth for strategy class name
+    # Trading controls extensions
+    available_capital: float | None = None
 
 
 class BotModeUpdate(BaseModel):

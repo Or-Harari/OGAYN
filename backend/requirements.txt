@@ -9,5 +9,8 @@ email-validator==2.2.0
 python-multipart==0.0.9
 psutil==5.9.8
 requests==2.32.3
-pandas==2.2.2
-numpy==1.26.4
+# Use versions compatible with Python 3.13 on Windows (prefer prebuilt wheels)
+pandas>=2.3,<3.0
+# Use NumPy wheels compatible with Python 3.13 on Windows
+numpy>=2.1,<3.0
+ccxt==4.3.23

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '@/stores/auth'
 import { useData } from '@/stores/data'
 import { api } from '@/lib/api'
@@ -41,6 +42,7 @@ type BotRuntimeInfo = {
 }
 
 export function Bots() {
+  const navigate = useNavigate()
   const userId = useAuth(s => s.userId)
   const bots = useData(s => s.bots)
   const loadBots = useData(s => s.loadBots)
@@ -73,9 +75,36 @@ export function Bots() {
   const [formLiquidationBuffer, setFormLiquidationBuffer] = useState<string>('0.0')
   const [formLeverage, setFormLeverage] = useState<number>(1)
   const [formDryRunWallet, setFormDryRunWallet] = useState<string>('')
+  const [formFiatDisplayCurrency, setFormFiatDisplayCurrency] = useState<string>('USD')
+  const [formAvailableCapital, setFormAvailableCapital] = useState<string>('')
+  // Pricing controls
+  const [entryPriceSide, setEntryPriceSide] = useState<'ask'|'bid'|'same'|'other'>('same')
+  const [entryUseOrderBook, setEntryUseOrderBook] = useState<boolean>(false)
+  const [entryOrderBookTop, setEntryOrderBookTop] = useState<number>(1)
+  const [entryPriceLastBalance, setEntryPriceLastBalance] = useState<number>(0)
+  const [entryDepthEnabled, setEntryDepthEnabled] = useState<boolean>(false)
+  const [entryDepthBidsToAskDelta, setEntryDepthBidsToAskDelta] = useState<number>(0)
+
+  const [exitPriceSide, setExitPriceSide] = useState<'ask'|'bid'|'same'|'other'>('same')
+  const [exitUseOrderBook, setExitUseOrderBook] = useState<boolean>(false)
+  const [exitOrderBookTop, setExitOrderBookTop] = useState<number>(1)
+  const [exitPriceLastBalance, setExitPriceLastBalance] = useState<number>(0)
+  const [exitDepthEnabled, setExitDepthEnabled] = useState<boolean>(false)
+  const [exitDepthBidsToAskDelta, setExitDepthBidsToAskDelta] = useState<number>(0)
   const [strategies, setStrategies] = useState<Array<{ name: string; clazz?: string }>>([])
   const [formStrategyName, setFormStrategyName] = useState<string>('')
   const [formStrategyClazz, setFormStrategyClazz] = useState<string>('')
+  useEffect(() => {
+    // Load available strategies for selection
+    const run = async () => {
+      try {
+        const res = await api.get('/config/user/strategies')
+        const names: string[] = Array.isArray(res.data?.strategies) ? res.data.strategies : []
+        setStrategies(names.map(n => ({ name: n })))
+      } catch {}
+    }
+    run()
+  }, [])
 
   // Logs
   const [rtTail, setRtTail] = useState<number>(500)
@@ -101,7 +130,7 @@ export function Bots() {
 
   const [livePair, setLivePair] = useState<string | null>(null)
   const [liveTf, setLiveTf] = useState<string | null>(null)
-  const [viewTab, setViewTab] = useState<'trade' | 'performance' | 'balance' | 'period'>('trade')
+  const [viewTab, setViewTab] = useState<'trade' | 'performance' | 'balance' | 'period' | 'config'>('trade')
   const viewTabKey = (botId?: number | null) => (botId ? `botViewTab:${botId}` : 'botViewTab')
   const bsSelKey = (botId?: number | null) => (botId ? `backstageSel:${botId}` : 'backstageSel')
 
@@ -109,8 +138,12 @@ export function Bots() {
   const [balance, setBalance] = useState<any | null>(null)
   const [balanceLoading, setBalanceLoading] = useState<boolean>(false)
   const [balanceError, setBalanceError] = useState<string | null>(null)
+  const [balanceNavigate, setBalanceNavigate] = useState<string | null>(null)
   const [pairProfitMap, setPairProfitMap] = useState<Record<string, number>>({})
   const [periodRows, setPeriodRows] = useState<Array<{ day: string; profit: number; trades: number; inCount: number }>>([])
+  // Config Tab local state
+  const [configSubTab, setConfigSubTab] = useState<'form'|'raw'>('form')
+  const [rawConfigText, setRawConfigText] = useState<string>('')
 
   const formatError = (val: any): string => {
     if (val == null) return 'Unknown error'
@@ -137,8 +170,8 @@ export function Bots() {
   useEffect(() => {
     if (!selectedId) return
     try {
-      const vt = localStorage.getItem(viewTabKey(selectedId)) as ('trade'|'performance'|'balance'|'period'|null)
-      if (vt === 'trade' || vt === 'performance' || vt === 'balance' || vt === 'period') setViewTab(vt)
+      const vt = localStorage.getItem(viewTabKey(selectedId)) as ('trade'|'performance'|'balance'|'period'|'config'|null)
+      if (vt === 'trade' || vt === 'performance' || vt === 'balance' || vt === 'period' || vt === 'config') setViewTab(vt)
     } catch {}
   }, [selectedId])
 
@@ -166,6 +199,9 @@ export function Bots() {
             api.get(`/config/bot/${b.id}`),
           ])
           setDetails(prev => ({ ...prev, [b.id]: { status: stRes.data, runtime: rtRes.data, config: cfgRes.data, loading: false, error: null } }))
+          if (selectedId === b.id) {
+            try { setRawConfigText(JSON.stringify(cfgRes.data ?? {}, null, 2)) } catch {}
+          }
         } catch (e: any) {
           const msg = extractError(e)
           setDetails(prev => ({ ...prev, [b.id]: { ...(prev[b.id] || {}), loading: false, error: String(msg) } }))
@@ -184,6 +220,41 @@ export function Bots() {
     const tfs = cfgTimeframes(cfg)
     setLivePair(prev => (!ps.length ? null : (prev && ps.includes(prev)) ? prev : ps[0]))
     setLiveTf(prev => (!tfs.length ? null : (prev && tfs.includes(prev)) ? prev : tfs[0]))
+    // Sync config tab form and raw editor
+    try {
+      setRawConfigText(JSON.stringify(cfg ?? {}, null, 2))
+      const tm = String(cfg?.trading_mode || 'spot').toLowerCase()
+      setFormTradingMode(tm === 'futures' ? 'futures' : 'spot')
+      setFormStakeCurrency(String(cfg?.stake_currency || 'USDT'))
+      setFormStakeAmount(String(cfg?.stake_amount ?? '10'))
+      const pairs = cfgPairs(cfg)
+      setFormPairsText(Array.isArray(pairs) ? pairs.join('\n') : '')
+      setFormMarginMode(String(cfg?.margin_mode || 'cross'))
+      setFormLiquidationBuffer(String(cfg?.liquidation_buffer ?? '0.0'))
+      try { setFormLeverage(Number(cfg?.leverage ?? 1) || 1) } catch { setFormLeverage(1) }
+      const dw = cfg?.dry_run_wallet
+      if (typeof dw === 'object') { try { setFormDryRunWallet(JSON.stringify(dw)) } catch { setFormDryRunWallet('') } }
+      else if (dw != null) { setFormDryRunWallet(String(dw)) } else { setFormDryRunWallet('') }
+      setFormFiatDisplayCurrency(String(cfg?.fiat_display_currency || 'USD'))
+      setFormStrategyName(String(cfg?.strategy || ''))
+      try { setFormAvailableCapital(cfg?.available_capital != null ? String(cfg?.available_capital) : '') } catch { setFormAvailableCapital('') }
+      const ep = (cfg?.entry_pricing || {})
+      setEntryPriceSide((ep?.price_side || 'same') as any)
+      setEntryUseOrderBook(!!ep?.use_order_book)
+      setEntryOrderBookTop(Number(ep?.order_book_top || 1))
+      setEntryPriceLastBalance(Number(ep?.price_last_balance || 0))
+      const ed = ep?.check_depth_of_market || {}
+      setEntryDepthEnabled(!!ed?.enabled)
+      setEntryDepthBidsToAskDelta(Number(ed?.bids_to_ask_delta || 0))
+      const xp = (cfg?.exit_pricing || {})
+      setExitPriceSide((xp?.price_side || 'same') as any)
+      setExitUseOrderBook(!!xp?.use_order_book)
+      setExitOrderBookTop(Number(xp?.order_book_top || 1))
+      setExitPriceLastBalance(Number(xp?.price_last_balance || 0))
+      const xd = xp?.check_depth_of_market || {}
+      setExitDepthEnabled(!!xd?.enabled)
+      setExitDepthBidsToAskDelta(Number(xd?.bids_to_ask_delta || 0))
+    } catch {}
   }, [selected?.id, details[selected?.id || -1]?.config])
 
   useEffect(() => {
@@ -226,19 +297,26 @@ export function Bots() {
 
   const fetchPerformance = async (botId: number) => {
     if (!userId) return
-    try { const res = await api.get(`/users/${userId}/bots/${botId}/proxy/freqtrade/performance`); const arr = Array.isArray(res.data) ? res.data : (Array.isArray(res.data?.performance) ? res.data.performance : []); setPerfByPair(arr) } catch { setPerfByPair([]) }
+    try { const res = await api.get(`/users/${userId}/bots/${botId}/performance`); const arr = Array.isArray(res.data) ? res.data : (Array.isArray(res.data?.performance) ? res.data.performance : []); setPerfByPair(arr) } catch { setPerfByPair([]) }
   }
 
   const fetchProfit = async (botId: number) => {
     if (!userId) return
-    try { const res = await api.get(`/users/${userId}/bots/${botId}/proxy/freqtrade/profit`); setProfitSummary(res.data || null) } catch { setProfitSummary(null) }
+    try { const res = await api.get(`/users/${userId}/bots/${botId}/profit`); setProfitSummary(res.data || null) } catch { setProfitSummary(null) }
   }
 
   const fetchBalance = async (botId: number) => {
     if (!userId) return
-    setBalanceLoading(true); setBalanceError(null)
+    setBalanceLoading(true); setBalanceError(null); setBalanceNavigate(null)
     try { const res = await api.get(`/users/${userId}/bots/${botId}/balance`); setBalance(res.data || null) }
-    catch (e:any) { setBalance(null); setBalanceError(extractError(e)) }
+    catch (e:any) {
+      setBalance(null);
+      setBalanceError(extractError(e))
+      try {
+        const nav = e?.response?.data?.detail?.action?.navigate || e?.response?.data?.action?.navigate
+        if (typeof nav === 'string' && nav.length > 0) setBalanceNavigate(nav)
+      } catch {}
+    }
     finally { setBalanceLoading(false) }
   }
 
@@ -254,6 +332,9 @@ export function Bots() {
     } else if (viewTab === 'period') {
       // Period view relies on closed trades history to derive rows
       fetchTradesHistory(selected.id)
+    } else if (viewTab === 'config') {
+      // Refresh config when entering Config tab
+      refreshBotDetails(selected.id)
     }
   }, [viewTab, liveSubTab, selected?.id])
 
@@ -405,6 +486,7 @@ export function Bots() {
                   <button onClick={()=>setViewTab('performance')} style={{ padding: '6px 10px', borderRadius: '6px 6px 0 0', border: '1px solid #e5e7eb', borderBottom: viewTab==='performance' ? '2px solid #3b82f6' : '1px solid #e5e7eb', background: viewTab==='performance' ? '#f0f7ff' : '#fff' }}>Performance</button>
                   <button onClick={()=>setViewTab('balance')} style={{ padding: '6px 10px', borderRadius: '6px 6px 0 0', border: '1px solid #e5e7eb', borderBottom: viewTab==='balance' ? '2px solid #3b82f6' : '1px solid #e5e7eb', background: viewTab==='balance' ? '#f0f7ff' : '#fff' }}>Balance</button>
                   <button onClick={()=>setViewTab('period')} style={{ padding: '6px 10px', borderRadius: '6px 6px 0 0', border: '1px solid #e5e7eb', borderBottom: viewTab==='period' ? '2px solid #3b82f6' : '1px solid #e5e7eb', background: viewTab==='period' ? '#f0f7ff' : '#fff' }}>Period</button>
+                  <button onClick={()=>setViewTab('config')} style={{ padding: '6px 10px', borderRadius: '6px 6px 0 0', border: '1px solid #e5e7eb', borderBottom: viewTab==='config' ? '2px solid #3b82f6' : '1px solid #e5e7eb', background: viewTab==='config' ? '#f0f7ff' : '#fff' }}>Config</button>
                 </div>
 
                 <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 12 }}>
@@ -503,6 +585,11 @@ export function Bots() {
                     {viewTab === 'balance' && (
                       <>
                         {balanceError && <div style={{ color: '#dc2626', marginBottom: 6 }}>{balanceError}</div>}
+                        {balanceError && balanceNavigate && (
+                          <div style={{ marginBottom: 6 }}>
+                            <button onClick={() => navigate(balanceNavigate!)} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #2563eb', background:'#2563eb', color:'#fff' }}>Go to Settings</button>
+                          </div>
+                        )}
                         {balanceLoading && <div style={{ fontSize: 12, color: '#6b7280' }}>Loading balance…</div>}
                         {!balanceLoading && !balance && <div style={{ fontSize: 12, color: '#6b7280' }}>No balance data.</div>}
                         {balance && (
@@ -568,6 +655,221 @@ export function Bots() {
                         )}
                       </>
                     )}
+                    {viewTab === 'config' && (() => {
+                      const d = details[selected.id]
+                      const running = !!d?.runtime?.running
+                      const disabled = running
+                      const cfg = details[selected.id]?.config || {}
+                      const saveRaw = async () => {
+                        if (!userId) return
+                        if (disabled) { notifyError('Stop the bot before updating config'); return }
+                        try {
+                          const obj = JSON.parse(rawConfigText)
+                          const allowed = ['pair_whitelist','stake_currency','stake_amount','dry_run','dry_run_wallet','meta','trading_mode','margin_mode','liquidation_buffer','leverage','strategy','timeframe','fiat_display_currency','available_capital','entry_pricing','exit_pricing']
+                          const patch: any = {}
+                          for (const k of allowed) if (k in obj) patch[k] = obj[k]
+                          await api.patch(`/config/bot/${selected.id}`, patch)
+                          await refreshBotDetails(selected.id)
+                          notifySuccess('Config updated')
+                        } catch (e:any) { notifyError(extractError(e) || 'Failed to update config') }
+                      }
+                      const saveForm = async () => {
+                        if (!userId) return
+                        if (disabled) { notifyError('Stop the bot before updating config'); return }
+                        try {
+                          const pairs = formPairsText.split(/\r?\n|,\s*/).map(s => s.trim()).filter(s => s.length > 0)
+                          const patch: any = {
+                            stake_currency: formStakeCurrency,
+                            stake_amount: isNaN(Number(formStakeAmount)) ? formStakeAmount : Number(formStakeAmount),
+                            pair_whitelist: pairs,
+                            trading_mode: formTradingMode,
+                            margin_mode: formTradingMode === 'futures' ? formMarginMode : undefined,
+                            liquidation_buffer: formTradingMode === 'futures' ? Number(formLiquidationBuffer || 0) : undefined,
+                            leverage: formTradingMode === 'futures' ? Number(formLeverage || 1) : undefined,
+                            fiat_display_currency: formFiatDisplayCurrency,
+                            strategy: formStrategyName || undefined,
+                            entry_pricing: {
+                              price_side: entryPriceSide,
+                              use_order_book: entryUseOrderBook,
+                              order_book_top: Number(entryOrderBookTop || 1),
+                              price_last_balance: Number(entryPriceLastBalance || 0),
+                              check_depth_of_market: { enabled: entryDepthEnabled, bids_to_ask_delta: Number(entryDepthBidsToAskDelta || 0) }
+                            },
+                            exit_pricing: {
+                              price_side: exitPriceSide,
+                              use_order_book: exitUseOrderBook,
+                              order_book_top: Number(exitOrderBookTop || 1),
+                              price_last_balance: Number(exitPriceLastBalance || 0),
+                              check_depth_of_market: { enabled: exitDepthEnabled, bids_to_ask_delta: Number(exitDepthBidsToAskDelta || 0) }
+                            },
+                          }
+                          // optional live-only config
+                          if (formAvailableCapital && formAvailableCapital.trim().length > 0) {
+                            const ac = Number(formAvailableCapital)
+                            if (!isNaN(ac)) patch.available_capital = ac
+                          }
+                          if (formDryRunWallet && formDryRunWallet.trim().length) {
+                            try {
+                              const dwParsed = JSON.parse(formDryRunWallet)
+                              patch.dry_run_wallet = dwParsed
+                            } catch {
+                              const num = Number(formDryRunWallet)
+                              if (!isNaN(num)) patch.dry_run_wallet = num
+                            }
+                          }
+                          await api.patch(`/config/bot/${selected.id}`, patch)
+                          await refreshBotDetails(selected.id)
+                          notifySuccess('Config updated')
+                        } catch (e:any) { notifyError(extractError(e) || 'Failed to update config') }
+                      }
+                      return (
+                        <div>
+                          <div style={{ display:'flex', gap:8, borderBottom:'1px solid #e5e7eb', marginBottom:8 }}>
+                            <button onClick={()=>setConfigSubTab('form')} style={{ padding:'6px 10px', borderRadius:'6px 6px 0 0', border:'1px solid #e5e7eb', borderBottom: configSubTab==='form' ? '2px solid #3b82f6' : '1px solid #e5e7eb', background: configSubTab==='form' ? '#f0f7ff' : '#fff' }}>Form</button>
+                            <button onClick={()=>setConfigSubTab('raw')} style={{ padding:'6px 10px', borderRadius:'6px 6px 0 0', border:'1px solid #e5e7eb', borderBottom: configSubTab==='raw' ? '2px solid #3b82f6' : '1px solid #e5e7eb', background: configSubTab==='raw' ? '#f0f7ff' : '#fff' }}>Raw JSON</button>
+                            {disabled && <div style={{ marginLeft:'auto', fontSize:12, color:'#dc2626' }}>Bot is running — config is read-only</div>}
+                          </div>
+                          {configSubTab === 'raw' ? (
+                            <div>
+                              <textarea value={rawConfigText} onChange={e=>setRawConfigText(e.target.value)} disabled={disabled} style={{ width:'100%', minHeight: 280, border:'1px solid #e5e7eb', borderRadius:8, padding:8, fontFamily:'monospace' }} />
+                              <div style={{ marginTop:8 }}>
+                                <button onClick={saveRaw} disabled={disabled} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #2563eb', background: disabled ? '#e5e7eb' : '#2563eb', color:'#fff' }}>Save</button>
+                                <button onClick={()=>{ try { setRawConfigText(JSON.stringify(cfg ?? {}, null, 2)) } catch {} }} style={{ marginLeft:8, padding:'6px 10px', borderRadius:6, border:'1px solid #6b7280', background:'#fff' }}>Reset</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                              <div>
+                                <label style={{ display:'block', fontSize:12 }}>Stake Currency</label>
+                                <input value={formStakeCurrency} onChange={e=>setFormStakeCurrency(e.target.value)} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                              </div>
+                              <div>
+                                <label style={{ display:'block', fontSize:12 }}>Stake Amount</label>
+                                <input value={formStakeAmount} onChange={e=>setFormStakeAmount(e.target.value)} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                              </div>
+                              <div style={{ gridColumn:'1 / span 2' }}>
+                                <label style={{ display:'block', fontSize:12 }}>Pairs (one per line)</label>
+                                <textarea value={formPairsText} onChange={e=>setFormPairsText(e.target.value)} disabled={disabled} style={{ width:'100%', minHeight: 120, border:'1px solid #e5e7eb', borderRadius:6, padding:6 }} />
+                              </div>
+                              <div>
+                                <label style={{ display:'block', fontSize:12 }}>Strategy</label>
+                                <select value={formStrategyName} onChange={e=>setFormStrategyName(e.target.value)} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }}>
+                                  <option value="">(none)</option>
+                                  {strategies.map(s => (<option key={s.name} value={s.name}>{s.name}</option>))}
+                                </select>
+                              </div>
+                              <div>
+                                <label style={{ display:'block', fontSize:12 }}>Fiat Display Currency</label>
+                                <input value={formFiatDisplayCurrency} onChange={e=>setFormFiatDisplayCurrency(e.target.value)} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                              </div>
+                              <div>
+                                <label style={{ display:'block', fontSize:12 }}>Trading Mode</label>
+                                <select value={formTradingMode} onChange={e=>setFormTradingMode(e.target.value as any)} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }}>
+                                  <option value="spot">Spot</option>
+                                  <option value="futures">Futures</option>
+                                </select>
+                              </div>
+                              {formTradingMode === 'futures' && (
+                                <>
+                                  <div>
+                                    <label style={{ display:'block', fontSize:12 }}>Margin Mode</label>
+                                    <input value={formMarginMode} onChange={e=>setFormMarginMode(e.target.value)} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                                  </div>
+                                  <div>
+                                    <label style={{ display:'block', fontSize:12 }}>Liquidation Buffer</label>
+                                    <input value={formLiquidationBuffer} onChange={e=>setFormLiquidationBuffer(e.target.value)} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                                  </div>
+                                  <div>
+                                    <label style={{ display:'block', fontSize:12 }}>Leverage</label>
+                                    <input type="number" value={formLeverage} onChange={e=>setFormLeverage(Number(e.target.value))} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                                  </div>
+                                </>
+                              )}
+                              <div style={{ gridColumn:'1 / span 2' }}>
+                                <label style={{ display:'block', fontSize:12 }}>Live available capital</label>
+                                <input value={formAvailableCapital} onChange={e=>setFormAvailableCapital(e.target.value)} disabled={disabled} placeholder="e.g., 1000" style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                              </div>
+                              <div style={{ gridColumn:'1 / span 2', border:'1px solid #e5e7eb', borderRadius:6, padding:8 }}>
+                                <div style={{ fontWeight:600, marginBottom:6 }}>Entry Pricing</div>
+                                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                                  <div>
+                                    <label style={{ display:'block', fontSize:12 }}>Price Side</label>
+                                    <select value={entryPriceSide} onChange={e=>setEntryPriceSide(e.target.value as any)} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }}>
+                                      <option value="ask">ask</option>
+                                      <option value="bid">bid</option>
+                                      <option value="same">same</option>
+                                      <option value="other">other</option>
+                                    </select>
+                                  </div>
+                                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                                    <input type="checkbox" checked={entryUseOrderBook} onChange={e=>setEntryUseOrderBook(e.target.checked)} disabled={disabled} />
+                                    <label style={{ fontSize:12 }}>Use Order Book</label>
+                                  </div>
+                                  <div>
+                                    <label style={{ display:'block', fontSize:12 }}>Order Book Top</label>
+                                    <input type="number" value={entryOrderBookTop} onChange={e=>setEntryOrderBookTop(Number(e.target.value))} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                                  </div>
+                                  <div>
+                                    <label style={{ display:'block', fontSize:12 }}>Price Last Balance</label>
+                                    <input type="number" value={entryPriceLastBalance} onChange={e=>setEntryPriceLastBalance(Number(e.target.value))} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                                  </div>
+                                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                                    <input type="checkbox" checked={entryDepthEnabled} onChange={e=>setEntryDepthEnabled(e.target.checked)} disabled={disabled} />
+                                    <label style={{ fontSize:12 }}>Check Depth of Market</label>
+                                  </div>
+                                  <div>
+                                    <label style={{ display:'block', fontSize:12 }}>Bids to Ask Delta</label>
+                                    <input type="number" value={entryDepthBidsToAskDelta} onChange={e=>setEntryDepthBidsToAskDelta(Number(e.target.value))} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                                  </div>
+                                </div>
+                              </div>
+                              <div style={{ gridColumn:'1 / span 2', border:'1px solid #e5e7eb', borderRadius:6, padding:8 }}>
+                                <div style={{ fontWeight:600, marginBottom:6 }}>Exit Pricing</div>
+                                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:10 }}>
+                                  <div>
+                                    <label style={{ display:'block', fontSize:12 }}>Price Side</label>
+                                    <select value={exitPriceSide} onChange={e=>setExitPriceSide(e.target.value as any)} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }}>
+                                      <option value="ask">ask</option>
+                                      <option value="bid">bid</option>
+                                      <option value="same">same</option>
+                                      <option value="other">other</option>
+                                    </select>
+                                  </div>
+                                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                                    <input type="checkbox" checked={exitUseOrderBook} onChange={e=>setExitUseOrderBook(e.target.checked)} disabled={disabled} />
+                                    <label style={{ fontSize:12 }}>Use Order Book</label>
+                                  </div>
+                                  <div>
+                                    <label style={{ display:'block', fontSize:12 }}>Order Book Top</label>
+                                    <input type="number" value={exitOrderBookTop} onChange={e=>setExitOrderBookTop(Number(e.target.value))} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                                  </div>
+                                  <div>
+                                    <label style={{ display:'block', fontSize:12 }}>Price Last Balance</label>
+                                    <input type="number" value={exitPriceLastBalance} onChange={e=>setExitPriceLastBalance(Number(e.target.value))} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                                  </div>
+                                  <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                                    <input type="checkbox" checked={exitDepthEnabled} onChange={e=>setExitDepthEnabled(e.target.checked)} disabled={disabled} />
+                                    <label style={{ fontSize:12 }}>Check Depth of Market</label>
+                                  </div>
+                                  <div>
+                                    <label style={{ display:'block', fontSize:12 }}>Bids to Ask Delta</label>
+                                    <input type="number" value={exitDepthBidsToAskDelta} onChange={e=>setExitDepthBidsToAskDelta(Number(e.target.value))} disabled={disabled} style={{ width:'100%', padding:6, border:'1px solid #e5e7eb', borderRadius:6 }} />
+                                  </div>
+                                </div>
+                              </div>
+                              <div style={{ gridColumn:'1 / span 2' }}>
+                                <label style={{ display:'block', fontSize:12 }}>Dry Run Wallet (number or JSON)</label>
+                                <textarea value={formDryRunWallet} onChange={e=>setFormDryRunWallet(e.target.value)} disabled={disabled} style={{ width:'100%', minHeight: 80, border:'1px solid #e5e7eb', borderRadius:6, padding:6 }} />
+                              </div>
+                              <div style={{ gridColumn:'1 / span 2', display:'flex', gap:8 }}>
+                                <button onClick={saveForm} disabled={disabled} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #2563eb', background: disabled ? '#e5e7eb' : '#2563eb', color:'#fff' }}>Save</button>
+                                <button onClick={()=>{ const cfg = details[selected.id]?.config || {}; setFormStakeCurrency(String(cfg?.stake_currency || 'USDT')); setFormStakeAmount(String(cfg?.stake_amount ?? '10')); const pairs = cfgPairs(cfg); setFormPairsText(Array.isArray(pairs) ? pairs.join('\n') : ''); const tm = String(cfg?.trading_mode || 'spot').toLowerCase(); setFormTradingMode(tm === 'futures' ? 'futures' : 'spot'); setFormMarginMode(String(cfg?.margin_mode || 'cross')); setFormLiquidationBuffer(String(cfg?.liquidation_buffer ?? '0.0')); try { setFormLeverage(Number(cfg?.leverage ?? 1) || 1) } catch { setFormLeverage(1) } const dw = cfg?.dry_run_wallet; if (typeof dw === 'object') { try { setFormDryRunWallet(JSON.stringify(dw)) } catch { setFormDryRunWallet('') } } else if (dw != null) { setFormDryRunWallet(String(dw)) } else { setFormDryRunWallet('') } setFormFiatDisplayCurrency(String(cfg?.fiat_display_currency || 'USD')); setFormAvailableCapital(cfg?.available_capital != null ? String(cfg?.available_capital) : ''); setFormStrategyName(String(cfg?.strategy || '')); const ep = (cfg?.entry_pricing || {}); setEntryPriceSide((ep?.price_side || 'same') as any); setEntryUseOrderBook(!!ep?.use_order_book); setEntryOrderBookTop(Number(ep?.order_book_top || 1)); setEntryPriceLastBalance(Number(ep?.price_last_balance || 0)); const ed = ep?.check_depth_of_market || {}; setEntryDepthEnabled(!!ed?.enabled); setEntryDepthBidsToAskDelta(Number(ed?.bids_to_ask_delta || 0)); const xp = (cfg?.exit_pricing || {}); setExitPriceSide((xp?.price_side || 'same') as any); setExitUseOrderBook(!!xp?.use_order_book); setExitOrderBookTop(Number(xp?.order_book_top || 1)); setExitPriceLastBalance(Number(xp?.price_last_balance || 0)); const xd = xp?.check_depth_of_market || {}; setExitDepthEnabled(!!xd?.enabled); setExitDepthBidsToAskDelta(Number(xd?.bids_to_ask_delta || 0)); }} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #6b7280', background:'#fff' }}>Reset</button>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })()}
                   </div>
                 </div>
               </div>

@@ -3,8 +3,8 @@
 Minimal, production-oriented repo for the multi-user FastAPI backend and React frontend to orchestrate Freqtrade bots. Local user workspaces, data caches, and build artifacts are excluded to keep the repository lean.
 
 ## Prerequisites
-- Python 3.11+
-- Node.js 18+
+- Python 3.12+ (default on Ubuntu 24.04)
+- Node.js 20+ LTS
 - Docker (for running Freqtrade bots)
 - Optional: Nginx (static frontend hosting / reverse proxy)
 
@@ -38,6 +38,21 @@ Frontend:
 2. Visit http://127.0.0.1:5173 (default Vite dev port).
 
 ## Production
+
+**For production deployment to Linux servers, see the complete deployment package:**
+- **[deployment/START_HERE.md](deployment/START_HERE.md)** - Complete overview
+- **[deployment/QUICKSTART.md](deployment/QUICKSTART.md)** - Fast deployment (20 minutes)
+- **[deployment/DEPLOYMENT_GUIDE.md](deployment/DEPLOYMENT_GUIDE.md)** - Comprehensive guide
+- **[deployment/SECURITY_CHECKLIST.md](deployment/SECURITY_CHECKLIST.md)** - Security hardening
+
+The deployment package includes:
+- Systemd service configuration with security sandboxing
+- Nginx configuration with SSL/HTTPS and security headers
+- Automated deployment, backup, and health check scripts
+- Complete documentation and security checklists
+- Environment-based CORS configuration
+
+Quick overview:
 - Build frontend static assets:
   ```powershell
   cd frontend/tradingg_bot_front
@@ -45,9 +60,10 @@ Frontend:
   npm run build
   ```
   The output lives under `frontend/tradingg_bot_front/dist`.
-- Serve frontend via Nginx or any static server. A sample config is under `backend/nginx/`.
-- Run backend as a service (e.g., `uvicorn` behind a process manager like `systemd`/`nssm`). Ensure `FT_JWT_SECRET` is set.
-- Freqtrade bots run in Docker containers. Backend composes per-bot configs and proxies REST to containers.
+- Serve frontend via Nginx (config in `deployment/nginx/`)
+- Run backend as systemd service (config in `deployment/systemd/`)
+- Ensure `FT_JWT_SECRET` and `ENVIRONMENT=production` are set
+- Freqtrade bots run in Docker containers managed by backend
 
 ## Versioning & Releases
 - Repo has a plain `VERSION` file; bump it when releasing.
@@ -74,9 +90,11 @@ Frontend:
 
 ## Environment Variables
 - `FT_JWT_SECRET` — Backend JWT signing key (required).
+- `ENVIRONMENT` — Set to `production` for production deployment (affects CORS behavior).
 - `FT_BACKEND_DB` — Optional path for backend SQLite DB.
 - `FT_WS_BASE` — Optional base directory for user workspaces.
 - `FT_BACKTEST_MUTATE_BOT` — If `true`, backtest endpoints mutate bot status (default `false`).
+- `CORS_ORIGINS` — Optional comma-separated list of allowed origins (production only).
 
 ## Updating Production
 1. Bump `VERSION`, commit and tag.

@@ -354,7 +354,7 @@ def compose_bot_config(user_workspace_root: str, bot_user_data_root: str, mode: 
             if data:
                 cfg = _deep_merge(cfg, data)
                 sources.append((f"user:{jf.name}", jf))
-    # 3. user account.json
+    # 3. user account.json (deferred override applied again after mode merge to avoid placeholders winning)
     account = _load_json_if(user_root / "configs" / "account.json")
     if account:
         cfg = _deep_merge(cfg, {"exchange": account.get("exchange", {})})
@@ -378,10 +378,25 @@ def compose_bot_config(user_workspace_root: str, bot_user_data_root: str, mode: 
             if mode_path.exists():
                 mode_cfg = _load_json_if(mode_path)
                 if mode_cfg:
+                    # Prevent mode templates from overriding user exchange credentials
+                    try:
+                        ex = mode_cfg.get("exchange")
+                        if isinstance(ex, dict):
+                            for k in ("key", "secret", "password", "uid"):
+                                if k in ex:
+                                    ex.pop(k, None)
+                    except Exception:
+                        pass
                     cfg = _deep_merge(cfg, mode_cfg)
                     sources.append((f"mode:{mode}", mode_path))
         except Exception:
             pass
+    # Re-apply account exchange after mode merge so user credentials override any placeholders
+    try:
+        if account:
+            cfg = _deep_merge(cfg, {"exchange": account.get("exchange", {})})
+    except Exception:
+        pass
     # 5c. sane defaults for backstage when no explicit mode file provided
     try:
         if (mode or "").lower() == "backstage":

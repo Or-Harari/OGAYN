@@ -11,9 +11,8 @@ export function Dashboard() {
   const userId = useAuth(s => s.userId)
   const [bots, setBots] = useState<BotItem[]>([])
   const [balances, setBalances] = useState<Record<number, number | null>>({})
-  const [profits, setProfits] = useState<Record<number, { live: { total: number; p24h: number; p7d: number; count: number; openCount: number }, dryrun: { total: number; p24h: number; p7d: number; count: number; openCount: number } }>>({})
-  const [exchangeConnected, setExchangeConnected] = useState<boolean | null>(null)
-  const [viewMode, setViewMode] = useState<'live' | 'dryrun'>('live')
+  const [balanceErrors, setBalanceErrors] = useState<Record<number, string | null>>({})
+  const [profits, setProfits] = useState<Record<number, { total: number; p24h: number; p7d: number; count: number; openCount: number }>>({})
   const [openStats, setOpenStats] = useState<Record<number, { count: number; profitAbs: number | null; profitPct: number | null }>>({})
 
   useEffect(() => {
@@ -24,71 +23,48 @@ export function Dashboard() {
         const items = res.data as BotItem[]
         setBots(items || [])
       } catch {}
-      try {
-        const ex = await api.get(`/config/user/exchange/view`)
-        const has = Boolean(ex?.data?.has_key) && Boolean(ex?.data?.has_secret)
-        setExchangeConnected(has)
-      } catch {
-        setExchangeConnected(null)
-      }
+      // No global exchange toggle needed; balance endpoint will report per-bot
     })()
   }, [userId])
 
   useEffect(() => {
     (async () => {
       for (const b of bots) {
-        // Balance: fetch for dryrun regardless; for live only if account connected
-        const shouldFetchBalance = viewMode === 'dryrun' || (viewMode === 'live' && !!exchangeConnected)
-        if (shouldFetchBalance) {
-          try {
-            const r = await api.get(`/users/${userId}/bots/${b.id}/balance`)
-            const total = Number(r?.data?.total || r?.data?.balance_total || r?.data?.data?.total || 0)
-            setBalances(prev => ({ ...prev, [b.id]: isFinite(total) ? total : null }))
-          } catch {
-            setBalances(prev => ({ ...prev, [b.id]: null }))
-          }
-        } else {
+        // Balance: always fetch; backend decides behavior per mode/status
+        try {
+          const r = await api.get(`/users/${userId}/bots/${b.id}/balance`)
+          const total = Number(r?.data?.total || r?.data?.balance_total || r?.data?.data?.total || 0)
+          setBalances(prev => ({ ...prev, [b.id]: isFinite(total) ? total : null }))
+          setBalanceErrors(prev => ({ ...prev, [b.id]: null }))
+        } catch (e:any) {
           setBalances(prev => ({ ...prev, [b.id]: null }))
+          const msg = (e?.response?.data?.detail?.error || e?.response?.data?.error || e?.message || '')
+          setBalanceErrors(prev => ({ ...prev, [b.id]: String(msg) }))
         }
-        // Profit from trades-history (compute live and dryrun separately)
-        const compute = async (mode: 'live' | 'dryrun') => {
-          try {
-            const r = await api.get(`/users/${userId}/bots/${b.id}/trades-history`, { params: { mode, limit: 1000 } })
-            const rows = Array.isArray(r.data) ? r.data : []
-            let total = 0, p24h = 0, p7d = 0
-            const now = Date.now()
-            const ms24h = 24 * 60 * 60 * 1000
-            const ms7d = 7 * ms24h
-            let openCount = 0
-            for (const t of rows) {
-              const pa = Number(t.profit_abs ?? t.close_profit_abs ?? t.realized_profit ?? 0)
-              total += pa
-              const closed = Number(t.close_date || t.sell_date || 0)
-              const ts = closed ? new Date(closed).getTime() : (t.date ? new Date(t.date).getTime() : 0)
-              if (ts && now - ts <= ms24h) p24h += pa
-              if (ts && now - ts <= ms7d) p7d += pa
-              const st = String(t.status || '').toLowerCase()
-              if (st === 'open' || !t.close_date) openCount += 1
-            }
-            setProfits(prev => ({
-              ...prev,
-              [b.id]: {
-                live: mode === 'live' ? { total, p24h, p7d, count: rows.length, openCount } : (prev[b.id]?.live ?? { total: 0, p24h: 0, p7d: 0, count: 0, openCount: 0 }),
-                dryrun: mode === 'dryrun' ? { total, p24h, p7d, count: rows.length, openCount } : (prev[b.id]?.dryrun ?? { total: 0, p24h: 0, p7d: 0, count: 0, openCount: 0 }),
-              },
-            }))
-          } catch {
-            setProfits(prev => ({
-              ...prev,
-              [b.id]: {
-                live: mode === 'live' ? { total: 0, p24h: 0, p7d: 0, count: 0, openCount: 0 } : (prev[b.id]?.live ?? { total: 0, p24h: 0, p7d: 0, count: 0, openCount: 0 }),
-                dryrun: mode === 'dryrun' ? { total: 0, p24h: 0, p7d: 0, count: 0, openCount: 0 } : (prev[b.id]?.dryrun ?? { total: 0, p24h: 0, p7d: 0, count: 0, openCount: 0 }),
-              },
-            }))
+        // Profit from trades-history based on bot mode
+        const mode = (String(b.mode || '').toLowerCase() === 'live') ? 'live' : 'dryrun'
+        try {
+          const r = await api.get(`/users/${userId}/bots/${b.id}/trades-history`, { params: { mode, limit: 1000 } })
+          const rows = Array.isArray(r.data) ? r.data : []
+          let total = 0, p24h = 0, p7d = 0
+          const now = Date.now()
+          const ms24h = 24 * 60 * 60 * 1000
+          const ms7d = 7 * ms24h
+          let openCount = 0
+          for (const t of rows) {
+            const pa = Number(t.profit_abs ?? t.close_profit_abs ?? t.realized_profit ?? 0)
+            total += pa
+            const closed = Number(t.close_date || t.sell_date || 0)
+            const ts = closed ? new Date(closed).getTime() : (t.date ? new Date(t.date).getTime() : 0)
+            if (ts && now - ts <= ms24h) p24h += pa
+            if (ts && now - ts <= ms7d) p7d += pa
+            const st = String(t.status || '').toLowerCase()
+            if (st === 'open' || !t.close_date) openCount += 1
           }
+          setProfits(prev => ({ ...prev, [b.id]: { total, p24h, p7d, count: rows.length, openCount } }))
+        } catch {
+          setProfits(prev => ({ ...prev, [b.id]: { total: 0, p24h: 0, p7d: 0, count: 0, openCount: 0 } }))
         }
-        await compute('live')
-        await compute('dryrun')
 
         // Open trades profit/count (only when running) via Freqtrade /status
         const running = (b.status || '').toLowerCase() !== 'stopped'
@@ -130,61 +106,35 @@ export function Dashboard() {
           } catch {
             // Fallback: use openCount from history if available
             const pf = profits[b.id]
-            const oc = viewMode === 'live' ? (pf?.live.openCount ?? 0) : (pf?.dryrun.openCount ?? 0)
+            const oc = pf?.openCount ?? 0
             setOpenStats(prev => ({ ...prev, [b.id]: { count: oc, profitAbs: null, profitPct: null } }))
           }
         } else {
           // Bot not running: count can be derived from history; profit unavailable
           const pf = profits[b.id]
-          const oc = viewMode === 'live' ? (pf?.live.openCount ?? 0) : (pf?.dryrun.openCount ?? 0)
+          const oc = pf?.openCount ?? 0
           setOpenStats(prev => ({ ...prev, [b.id]: { count: oc, profitAbs: null, profitPct: null } }))
         }
       }
     })()
-  }, [bots, userId, exchangeConnected, viewMode])
+  }, [bots, userId])
 
   const aggregate = useMemo(() => {
     let total = 0, p24h = 0, p7d = 0
     for (const b of bots) {
       const pf = profits[b.id]
       if (!pf) continue
-      if (viewMode === 'live') {
-        total += pf.live.total; p24h += pf.live.p24h; p7d += pf.live.p7d
-      } else {
-        total += pf.dryrun.total; p24h += pf.dryrun.p24h; p7d += pf.dryrun.p7d
-      }
+      total += pf.total; p24h += pf.p24h; p7d += pf.p7d
     }
     return { total, p24h, p7d }
-  }, [bots, profits, viewMode])
-
-  const displayBots = useMemo(() => {
-    return bots.filter(b => {
-      const pf = profits[b.id]
-      const running = (b.status || '').toLowerCase() !== 'stopped'
-      const hasDataForMode = viewMode === 'live' ? ((pf?.live.count ?? 0) > 0) : ((pf?.dryrun.count ?? 0) > 0)
-      const runningForMode = running && (String(b.mode).toLowerCase() === viewMode)
-      return runningForMode || hasDataForMode
-    })
   }, [bots, profits])
+
+  const displayBots = useMemo(() => bots, [bots])
 
   return (
     <div className="content">
       <h2>Dashboard</h2>
-      <div style={{ marginBottom: 12 }}>
-        <div style={{ display: 'inline-flex', gap: 8, background: '#111827', borderRadius: 999, padding: 4 }}>
-          {(['live', 'dryrun'] as const).map(m => (
-            <button
-              key={m}
-              onClick={() => setViewMode(m)}
-              style={{
-                padding: '6px 12px', borderRadius: 999,
-                background: viewMode === m ? '#2563eb' : 'transparent',
-                color: viewMode === m ? '#fff' : '#9ca3af', border: 'none', cursor: 'pointer'
-              }}
-            >{m === 'live' ? 'Live' : 'Dryrun'}</button>
-          ))}
-        </div>
-      </div>
+      {/* Removed Live/Dryrun toggle; show all bots in one list */}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 14 }}>
         <StatCard title="Total Profit" value={`${aggregate.total.toFixed(2)} USDT`} accent={aggregate.total >= 0 ? 'green' : 'red'} />
         <StatCard title="Last 24h" value={`${aggregate.p24h.toFixed(2)} USDT`} accent={aggregate.p24h >= 0 ? 'green' : 'red'} />
@@ -196,7 +146,7 @@ export function Dashboard() {
         {displayBots.map(b => {
           const bal = balances[b.id]
           const pf = profits[b.id]
-          const sel = viewMode === 'live' ? pf?.live : pf?.dryrun
+          const sel = pf
           const os = openStats[b.id]
           return (
             <div key={b.id} style={{ border: '1px solid #374151', borderRadius: 12, padding: 12, cursor: 'pointer' }} onClick={() => {
@@ -216,20 +166,18 @@ export function Dashboard() {
                   {(b.status || '').toLowerCase() === 'stopped' ? 'stopped' : 'running'} {b.mode ? `(${b.mode})` : ''}
                   {(() => {
                     const pf = profits[b.id]
-                    const histOpen = viewMode === 'live' ? (pf?.live.openCount ?? 0) : (pf?.dryrun.openCount ?? 0)
+                    const histOpen = pf?.openCount ?? 0
                     const cnt = os?.count ?? histOpen
                     return cnt > 0 ? ` • ${cnt} open` : ''
                   })()}
                 </span>
               </div>
               <div style={{ marginTop: 10, display: 'grid', gridTemplateColumns: 'repeat(3, minmax(0, 1fr))', gap: 10 }}>
-                <StatCard title={viewMode === 'live' ? 'Live Balance' : 'Dryrun Balance'} value={
-                  viewMode === 'live'
-                    ? (exchangeConnected === false ? "User's Live Account Not Connected" : ((bal ?? null) !== null ? `${bal!.toFixed(2)} USDT` : '—'))
-                    : ((bal ?? null) !== null ? `${bal!.toFixed(2)} USDT` : '—')
+                <StatCard title="Balance" value={
+                  (bal ?? null) !== null ? `${bal!.toFixed(2)} USDT` : (balanceErrors[b.id] ? balanceErrors[b.id]! : '—')
                 } />
-                <StatCard title={viewMode === 'live' ? 'Live Profit' : 'Dryrun Profit'} value={`${(sel?.total ?? 0).toFixed(2)} USDT`} accent={(sel?.total ?? 0) >= 0 ? 'green' : 'red'} />
-                <StatCard title={viewMode === 'live' ? '24h (Live)' : '24h (Dryrun)'} value={`${(sel?.p24h ?? 0).toFixed(2)} USDT`} accent={(sel?.p24h ?? 0) >= 0 ? 'green' : 'red'} />
+                <StatCard title="Profit" value={`${(sel?.total ?? 0).toFixed(2)} USDT`} accent={(sel?.total ?? 0) >= 0 ? 'green' : 'red'} />
+                <StatCard title="24h" value={`${(sel?.p24h ?? 0).toFixed(2)} USDT`} accent={(sel?.p24h ?? 0) >= 0 ? 'green' : 'red'} />
                 <StatCard title="Open Profit" value={
                   os && (os.profitAbs ?? null) !== null
                     ? `${(os.profitAbs ?? 0).toFixed(2)} USDT`

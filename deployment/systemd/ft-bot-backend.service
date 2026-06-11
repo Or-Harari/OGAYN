@@ -1,0 +1,51 @@
+[Unit]
+Description=FT-Bot FastAPI Backend
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=ftbot
+Group=ftbot
+WorkingDirectory=/opt/ft-bot
+EnvironmentFile=/opt/ft-bot/.env.production
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/ft-bot/backend/data /opt/ft-bot/workspaces /opt/ft-bot/bt-userdir
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+
+# Process management
+Restart=on-failure
+RestartSec=5s
+KillMode=mixed
+KillSignal=SIGTERM
+TimeoutStopSec=30
+
+# Resource limits
+LimitNOFILE=65536
+MemoryHigh=1G
+MemoryMax=2G
+
+# Start the service with uvicorn
+ExecStart=/opt/ft-bot/.venv/bin/uvicorn \
+    backend.app.main:app \
+    --host 127.0.0.1 \
+    --port 8000 \
+    --workers 4 \
+    --log-level info \
+    --access-log \
+    --proxy-headers \
+    --forwarded-allow-ips='*'
+
+ExecReload=/bin/kill -s HUP $MAINPID
+
+[Install]
+WantedBy=multi-user.target

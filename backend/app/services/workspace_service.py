@@ -100,8 +100,9 @@ def create_bot_workspace(user_root: str, bot_name: str) -> str:
     dry_cfg = bots_root / "configs" / "dryrun.json"
     back_cfg = bots_root / "configs" / "backstage.json"
     if not live_cfg.exists():
+        # Do not seed exchange placeholders; account.json will provide credentials.
         live_cfg.write_text(
-            '{"dry_run": false, "exchange": {"key": "__REQUIRED__", "secret": "__REQUIRED__"}}',
+            '{"dry_run": false}',
             encoding="utf-8",
         )
     if not dry_cfg.exists():

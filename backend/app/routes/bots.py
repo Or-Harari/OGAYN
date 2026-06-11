@@ -30,6 +30,8 @@ from ..services.bot_service import (
     list_backtest_results,
     load_backtest_result,
 )
+from ..services.exchange_service import fetch_exchange_balance, fetch_dryrun_balance
+from ..services.config_service import get_user_account_config, compose_bot_config
 from ..services import analytics_runtime as rt
 from ..schemas import BacktestStartRequest, RuntimeInfo
 
@@ -138,7 +140,34 @@ def update_bot_config(user_id: int, bot_id: int, req: BotConfigPatch, current=De
 
     # Apply only allowed fields
     payload = req.dict(exclude_none=True)
-    allowed = {"pair_whitelist", "stake_currency", "stake_amount", "dry_run", "dry_run_wallet", "meta", "trading_mode", "margin_mode", "liquidation_buffer", "leverage", "strategy", "timeframe"}
+    allowed = {
+        "pair_whitelist",
+        "stake_currency",
+        "stake_amount",
+        "dry_run",
+        "dry_run_wallet",
+        "meta",
+        "trading_mode",
+        "margin_mode",
+        "liquidation_buffer",
+        "leverage",
+        "strategy",
+        "timeframe",
+        # Trading controls/extensions
+        "fiat_display_currency",
+        "tradable_balance_ratio",
+        "available_capital",
+        "amend_last_stake_amount",
+        "last_stake_amount_min_ratio",
+        "amount_reserve_percent",
+        "fee",
+        "futures_funding_rate",
+        "cancel_open_orders_on_exit",
+        "custom_price_max_distance_ratio",
+        # Pricing blocks
+        "entry_pricing",
+        "exit_pricing",
+    }
     for k in list(payload.keys()):
         if k not in allowed:
             payload.pop(k, None)
@@ -217,17 +246,231 @@ def get_bot_balance(user_id: int, bot_id: int, current=Depends(get_current_user)
     bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
-    status_code, payload = proxy_freqtrade_api(bot, "GET", "/balance")
-    # Remap upstream 401 (Freqtrade API auth) to 403 so the frontend doesn't log out.
-    if status_code == status.HTTP_401_UNAUTHORIZED:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
-            "error": "Bot balance unavailable: Freqtrade API unauthorized",
-            "hint": "Ensure the bot is running and api_server credentials match",
-        })
-    if status_code >= 400:
-        raise HTTPException(status_code=status_code, detail=payload)
-    return payload
+    # If bot is running, prefer proxying to Freqtrade for full fidelity
+    try:
+        rtinfo = get_runtime_info(db, user, bot)
+        running = bool(rtinfo.get("running"))
+    except Exception:
+        running = False
+    if running:
+        status_code, payload = proxy_freqtrade_api(bot, "GET", "/balance")
+        # Remap upstream 401 (Freqtrade API auth) to 403 so the frontend doesn't log out.
+        if status_code == status.HTTP_401_UNAUTHORIZED:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+                "error": "Bot balance unavailable: Freqtrade API unauthorized",
+                "hint": "Ensure the bot is running and api_server credentials match",
+            })
+        if status_code >= 400:
+            raise HTTPException(status_code=status_code, detail=payload)
+        return payload
+    # Bot not running: respect mode and exchange configuration
+    # Determine effective mode from DB and composed config
+    is_dryrun = False
+    try:
+        mode = (getattr(bot, "mode", None) or "").lower()
+        if mode == "dryrun":
+            is_dryrun = True
+        else:
+            import json as _json
+            cfg_path = compose_bot_config(current.workspace_root, bot.userdir, mode=getattr(bot, "mode", None), active_strategy=None)
+            with open(cfg_path, "r", encoding="utf-8") as f:
+                cfg_json = _json.load(f) or {}
+            is_dryrun = bool(cfg_json.get("dry_run", False))
+    except Exception:
+        is_dryrun = (str(getattr(bot, "mode", "")).lower() == "dryrun")
 
+    if is_dryrun:
+        # Do NOT call exchange in dryrun; return simulated balance
+        try:
+            return fetch_dryrun_balance(current.workspace_root, bot.userdir)
+        except Exception as e:
+            raise HTTPException(status_code=503, detail={
+                "error": "Dryrun balance unavailable",
+                "hint": "Ensure bot config has 'dry_run_wallet' or 'stake_currency'",
+                "exception": str(e),
+            })
+
+    # Live mode: require exchange credentials
+    account = get_user_account_config(current.workspace_root) or {}
+    exch = account.get("exchange", {}) or {}
+    has_key = bool(exch.get("key"))
+    has_secret = bool(exch.get("secret"))
+    if not (has_key and has_secret):
+        # Do not hit exchange; instruct user to configure keys
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail={
+            "error": "Exchange API-key is not configured",
+            "hint": "To view exchange details such as Balance, update settings at /config/user/exchange",
+            "action": {"navigate": "/settings"},
+        })
+
+    # Determine trading mode to build ccxt with correct defaultType
+    trading_mode = "spot"
+    try:
+        if 'cfg_json' in locals():
+            tmode = (cfg_json.get("trading_mode") or "spot").lower()
+            trading_mode = "futures" if tmode == "futures" else "spot"
+    except Exception:
+        trading_mode = "spot"
+    try:
+        data = fetch_exchange_balance(current.workspace_root, trading_mode=trading_mode)
+        if not data:
+            raise HTTPException(status_code=503, detail={
+                "error": "Exchange balance unavailable",
+                "hint": "Verify exchange connectivity and credentials",
+            })
+        return data
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=503, detail={
+            "error": "Failed to fetch exchange balance",
+            "hint": "Verify exchange configuration and network connectivity",
+            "exception": str(e),
+        })
+
+
+@router.get("/{user_id}/bots/{bot_id}/performance")
+def get_bot_performance(user_id: int, bot_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return performance by pair.
+
+    If the bot is running, proxy to Freqtrade /performance. Otherwise, compute from local SQLite trades.
+    """
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    # Running? proxy upstream
+    try:
+        rtinfo = get_runtime_info(db, user, bot)
+        running = bool(rtinfo.get("running"))
+    except Exception:
+        running = False
+    if running:
+        status_code, payload = proxy_freqtrade_api(bot, "GET", "/performance")
+        if status_code == status.HTTP_401_UNAUTHORIZED:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+                "error": "Bot performance unavailable: Freqtrade API unauthorized",
+                "hint": "Ensure the bot is running and api_server credentials match",
+            })
+        if status_code >= 400:
+            raise HTTPException(status_code=status_code, detail=payload)
+        return payload
+    # Not running: compute from local trades DBs
+    try:
+        rows = get_trades_history(user, bot, mode="all", limit=None) or []
+        # Consider only closed trades
+        closed = [r for r in rows if str(r.get("status") or "").lower() == "closed" or bool(r.get("close_date"))]
+        by_pair: dict[str, dict] = {}
+        for r in closed:
+            p = str(r.get("pair") or "-")
+            pa = float(r.get("profit_abs") or r.get("close_profit_abs") or r.get("realized_profit") or 0.0)
+            pr = float(r.get("profit_ratio") or r.get("close_profit") or 0.0)
+            cur = by_pair.setdefault(p, {"profit_abs": 0.0, "profit_ratio_sum": 0.0, "count": 0})
+            cur["profit_abs"] += pa
+            cur["profit_ratio_sum"] += pr
+            cur["count"] += 1
+        out = []
+        for pair, v in by_pair.items():
+            avg_ratio = (v["profit_ratio_sum"] / v["count"]) if v["count"] else 0.0
+            out.append({
+                "pair": pair,
+                "profit_abs": v["profit_abs"],
+                "profit_ratio": avg_ratio,
+                "trades": v["count"],
+            })
+        return out
+    except Exception as e:
+        raise HTTPException(status_code=503, detail={
+            "error": "Failed to compute performance from local trades",
+            "exception": str(e),
+        })
+
+
+@router.get("/{user_id}/bots/{bot_id}/profit")
+def get_bot_profit(user_id: int, bot_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Return overall profit summary.
+
+    If the bot is running, proxy to Freqtrade /profit. Otherwise, compute from local SQLite trades.
+    """
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    # Running? proxy upstream
+    try:
+        rtinfo = get_runtime_info(db, user, bot)
+        running = bool(rtinfo.get("running"))
+    except Exception:
+        running = False
+    if running:
+        status_code, payload = proxy_freqtrade_api(bot, "GET", "/profit")
+        if status_code == status.HTTP_401_UNAUTHORIZED:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+                "error": "Bot profit unavailable: Freqtrade API unauthorized",
+                "hint": "Ensure the bot is running and api_server credentials match",
+            })
+        if status_code >= 400:
+            raise HTTPException(status_code=status_code, detail=payload)
+        return payload
+    # Not running: compute from local trades DBs
+    try:
+        rows = get_trades_history(user, bot, mode="all", limit=None) or []
+        closed = [r for r in rows if str(r.get("status") or "").lower() == "closed" or bool(r.get("close_date"))]
+        total_abs = 0.0
+        ratios: list[float] = []
+        durations_sec: list[float] = []
+        for r in closed:
+            pa = float(r.get("profit_abs") or r.get("close_profit_abs") or r.get("realized_profit") or 0.0)
+            pr = float(r.get("profit_ratio") or r.get("close_profit") or 0.0)
+            total_abs += pa
+            ratios.append(pr)
+            # Duration
+            try:
+                od = r.get("open_date")
+                cd = r.get("close_date")
+                if od and cd:
+                    from datetime import datetime
+                    o = datetime.fromisoformat(str(od).replace("Z", "+00:00"))
+                    c = datetime.fromisoformat(str(cd).replace("Z", "+00:00"))
+                    durations_sec.append(max(0.0, (c - o).total_seconds()))
+            except Exception:
+                pass
+        avg_ratio = (sum(ratios) / len(ratios)) if ratios else 0.0
+        avg_dur_sec = (sum(durations_sec) / len(durations_sec)) if durations_sec else 0.0
+        # Build a human-friendly duration string
+        def _fmt_duration(seconds: float) -> str:
+            try:
+                s = int(seconds)
+                m, s = divmod(s, 60)
+                h, m = divmod(m, 60)
+                d, h = divmod(h, 24)
+                parts = []
+                if d: parts.append(f"{d}d")
+                if h: parts.append(f"{h}h")
+                if m: parts.append(f"{m}m")
+                if not parts:
+                    parts.append(f"{s}s")
+                return " ".join(parts)
+            except Exception:
+                return "-"
+        summary = {
+            "profit_abs": total_abs,
+            "profit_ratio": avg_ratio,
+            "avg_profit_ratio": avg_ratio,
+            "total_trades": len(closed),
+            "avg_duration": _fmt_duration(avg_dur_sec),
+            "avg_duration_sec": avg_dur_sec,
+        }
+        return summary
+    except Exception as e:
+        raise HTTPException(status_code=503, detail={
+            "error": "Failed to compute profit summary from local trades",
+            "exception": str(e),
+        })
 
 @router.post("/{user_id}/bots/{bot_id}/data/download")
 def download_bot_data(user_id: int, bot_id: int, body: dict, current=Depends(get_current_user), db: Session = Depends(get_db)):
@@ -326,6 +569,18 @@ async def proxy_freqtrade(user_id: int, bot_id: int, full_path: str, request: Re
             raw_body = await request.body()
     except Exception:
         raw_body = None
+    # Guard: block mutations when bot is not running (non-GET methods)
+    try:
+        rtinfo = get_runtime_info(db, user, bot)
+        is_running = bool(rtinfo.get("running"))
+    except Exception:
+        is_running = False
+    if not is_running and request.method.upper() not in {"GET", "HEAD", "OPTIONS"}:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
+            "error": "Bot is not running; mutations disabled",
+            "hint": f"Blocked {request.method} to '{full_path}'",
+        })
+
     status_code, payload = proxy_freqtrade_api(
         bot,
         method,
