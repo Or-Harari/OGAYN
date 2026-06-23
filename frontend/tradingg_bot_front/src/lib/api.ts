@@ -1,9 +1,17 @@
 import axios from 'axios'
 
 export const API_BASE = ((): string => {
-  // Simple runtime base selection. Adjust for emulator/device if needed.
+  // Use environment variable if set, otherwise use relative path '/api' for production
   const env = (import.meta as any).env
-  return env?.VITE_API_BASE || 'http://127.0.0.1:8000'
+  const apiBase = env?.VITE_API_BASE
+  
+  if (apiBase) {
+    return apiBase
+  }
+  
+  // In production, use relative path (nginx will proxy /api to backend)
+  // In development, this can be configured via vite proxy or VITE_API_BASE env var
+  return '/api'
 })()
 
 export const api = axios.create({

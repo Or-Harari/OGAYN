@@ -446,6 +446,40 @@ export function Bots() {
     try { await api.post(`/users/${userId}/bots/${botId}/proxy/freqtrade/forceexit`, { tradeid: 'all', ordertype: mode }); setLiveTrades([]); setLiveRefreshKey(k => k + 1); notifySuccess(`All trades closed by ${mode}`) } catch (e:any) { notifyError(extractError(e) || `Failed to close all trades (${mode})`) }
   }
 
+  // Sync trades with platform (for live mode bots)
+  const syncTradesWithPlatform = async (botId: number) => {
+    if (!userId) return
+    try {
+      const res = await api.post(`/users/${userId}/bots/${botId}/trades/sync`)
+      const data = res.data || {}
+      if (data.deleted && data.deleted > 0) {
+        console.log(`Trade sync: Removed ${data.deleted} orphaned trade(s) from bot ${botId}`)
+        // Refresh live trades after sync
+        setLiveRefreshKey(k => k + 1)
+      }
+    } catch (e: any) {
+      // Silent fail - don't notify user on background sync errors
+      console.error('Trade sync failed:', extractError(e))
+    }
+  }
+
+  // Periodic trade sync for live mode bots (every 5 minutes)
+  useEffect(() => {
+    if (!selected || !userId) return
+    const isLiveMode = String(selected.mode || '').toLowerCase() === 'live'
+    if (!isLiveMode) return
+
+    // Initial sync
+    syncTradesWithPlatform(selected.id)
+
+    // Set up periodic sync every 5 minutes
+    const intervalId = setInterval(() => {
+      syncTradesWithPlatform(selected.id)
+    }, 5 * 60 * 1000) // 5 minutes
+
+    return () => clearInterval(intervalId)
+  }, [selected?.id, selected?.mode, userId])
+
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, flexWrap: 'wrap' }}>

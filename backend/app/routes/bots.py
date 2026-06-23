@@ -333,7 +333,7 @@ def get_bot_balance(user_id: int, bot_id: int, current=Depends(get_current_user)
 def get_bot_performance(user_id: int, bot_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
     """Return performance by pair.
 
-    If the bot is running, proxy to Freqtrade /performance. Otherwise, compute from local SQLite trades.
+    If the bot mode is 'live', proxy to Freqtrade /performance. Otherwise, compute from local SQLite trades.
     """
     user = _get_user(db, user_id)
     if current.id != user.id:
@@ -341,13 +341,14 @@ def get_bot_performance(user_id: int, bot_id: int, current=Depends(get_current_u
     bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
-    # Running? proxy upstream
+    # Live mode AND running? proxy upstream to Freqtrade API
+    is_live_mode = str(bot.mode).lower() == 'live'
     try:
         rtinfo = get_runtime_info(db, user, bot)
         running = bool(rtinfo.get("running"))
     except Exception:
         running = False
-    if running:
+    if is_live_mode and running:
         status_code, payload = proxy_freqtrade_api(bot, "GET", "/performance")
         if status_code == status.HTTP_401_UNAUTHORIZED:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
@@ -357,9 +358,10 @@ def get_bot_performance(user_id: int, bot_id: int, current=Depends(get_current_u
         if status_code >= 400:
             raise HTTPException(status_code=status_code, detail=payload)
         return payload
-    # Not running: compute from local trades DBs
+    # Not running: compute from local trades DBs based on bot's mode
     try:
-        rows = get_trades_history(user, bot, mode="all", limit=None) or []
+        fetch_mode = "live" if is_live_mode else "dryrun"
+        rows = get_trades_history(user, bot, mode=fetch_mode, limit=None) or []
         # Consider only closed trades
         closed = [r for r in rows if str(r.get("status") or "").lower() == "closed" or bool(r.get("close_date"))]
         by_pair: dict[str, dict] = {}
@@ -392,7 +394,7 @@ def get_bot_performance(user_id: int, bot_id: int, current=Depends(get_current_u
 def get_bot_profit(user_id: int, bot_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
     """Return overall profit summary.
 
-    If the bot is running, proxy to Freqtrade /profit. Otherwise, compute from local SQLite trades.
+    If the bot mode is 'live', proxy to Freqtrade /profit. Otherwise, compute from local SQLite trades.
     """
     user = _get_user(db, user_id)
     if current.id != user.id:
@@ -400,13 +402,14 @@ def get_bot_profit(user_id: int, bot_id: int, current=Depends(get_current_user),
     bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
     if not bot:
         raise HTTPException(status_code=404, detail="Bot not found")
-    # Running? proxy upstream
+    # Live mode AND running? proxy upstream to Freqtrade API
+    is_live_mode = str(bot.mode).lower() == 'live'
     try:
         rtinfo = get_runtime_info(db, user, bot)
         running = bool(rtinfo.get("running"))
     except Exception:
         running = False
-    if running:
+    if is_live_mode and running:
         status_code, payload = proxy_freqtrade_api(bot, "GET", "/profit")
         if status_code == status.HTTP_401_UNAUTHORIZED:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail={
@@ -416,9 +419,10 @@ def get_bot_profit(user_id: int, bot_id: int, current=Depends(get_current_user),
         if status_code >= 400:
             raise HTTPException(status_code=status_code, detail=payload)
         return payload
-    # Not running: compute from local trades DBs
+    # Not running: compute from local trades DBs based on bot's mode
     try:
-        rows = get_trades_history(user, bot, mode="all", limit=None) or []
+        fetch_mode = "live" if is_live_mode else "dryrun"
+        rows = get_trades_history(user, bot, mode=fetch_mode, limit=None) or []
         closed = [r for r in rows if str(r.get("status") or "").lower() == "closed" or bool(r.get("close_date"))]
         total_abs = 0.0
         ratios: list[float] = []
@@ -757,6 +761,134 @@ def bot_dryrun_reset_route(user_id: int, bot_id: int, current=Depends(get_curren
             except Exception:
                 logger.warning(f"Failed to remove/truncate {p}: {e}")
     return {"status": "ok", "removed": removed}
+
+
+@router.post("/{user_id}/bots/{bot_id}/trades/sync")
+def sync_trades_with_platform(user_id: int, bot_id: int, current=Depends(get_current_user), db: Session = Depends(get_db)):
+    """Sync trades between local database and Freqtrade platform.
+    
+    For live mode bots:
+    - Fetches open trades from Freqtrade API (/status)
+    - Compares with local open trades in SQLite
+    - Deletes local trades that don't exist on the platform
+    
+    Returns:
+    - status: 'ok' or 'error'
+    - checked: number of local open trades checked
+    - deleted: number of orphaned trades removed
+    - platform_trades: number of open trades on platform
+    """
+    user = _get_user(db, user_id)
+    if current.id != user.id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Forbidden")
+    bot = db.query(Bot).filter(Bot.id == bot_id, Bot.user_id == user.id).first()
+    if not bot:
+        raise HTTPException(status_code=404, detail="Bot not found")
+    
+    # Only sync for live mode bots that are running
+    is_live_mode = str(bot.mode).lower() == 'live'
+    try:
+        rtinfo = get_runtime_info(db, user, bot)
+        running = bool(rtinfo.get("running"))
+    except Exception:
+        running = False
+    
+    if not is_live_mode:
+        return {
+            "status": "skipped",
+            "message": "Trade sync only applies to live mode bots",
+            "checked": 0,
+            "deleted": 0,
+            "platform_trades": 0
+        }
+    
+    if not running:
+        return {
+            "status": "skipped",
+            "message": "Bot is not running, cannot sync trades",
+            "checked": 0,
+            "deleted": 0,
+            "platform_trades": 0
+        }
+    
+    try:
+        # 1. Fetch open trades from Freqtrade platform
+        status_code, payload = proxy_freqtrade_api(bot, "GET", "/status")
+        if status_code >= 400:
+            raise HTTPException(
+                status_code=status_code,
+                detail={
+                    "error": "Failed to fetch open trades from Freqtrade platform",
+                    "status_code": status_code,
+                    "payload": payload
+                }
+            )
+        
+        platform_trades = payload if isinstance(payload, list) else []
+        platform_trade_ids = {str(t.get("trade_id") or t.get("id") or "") for t in platform_trades if t.get("trade_id") or t.get("id")}
+        
+        # 2. Fetch local open trades from SQLite
+        local_trades = get_trades_history(user, bot, mode="live", limit=None) or []
+        local_open_trades = [
+            t for t in local_trades 
+            if str(t.get("status") or "").lower() in ("open", "active") or not t.get("close_date")
+        ]
+        
+        # 3. Compare and find orphaned trades (in local DB but not on platform)
+        deleted_count = 0
+        deleted_trade_ids = []
+        
+        from pathlib import Path as _Path
+        import sqlite3
+        
+        bot_userdir = _Path(bot.userdir).resolve()
+        live_db_candidates = [
+            bot_userdir / "tradesv3.sqlite",
+            bot_userdir / "tradesv4.sqlite",
+        ]
+        live_db = next((p for p in live_db_candidates if p.exists()), None)
+        
+        if live_db and live_db.exists():
+            for local_trade in local_open_trades:
+                local_trade_id = str(local_trade.get("trade_id") or local_trade.get("id") or "")
+                
+                # If local trade doesn't exist on platform, delete it
+                if local_trade_id and local_trade_id not in platform_trade_ids:
+                    try:
+                        conn = sqlite3.connect(str(live_db))
+                        cursor = conn.cursor()
+                        
+                        # Delete from trades table
+                        cursor.execute("DELETE FROM trades WHERE id = ?", (local_trade_id,))
+                        
+                        conn.commit()
+                        conn.close()
+                        
+                        deleted_count += 1
+                        deleted_trade_ids.append(local_trade_id)
+                        logger.info(f"Deleted orphaned trade {local_trade_id} from bot {bot.id} (not found on platform)")
+                    except Exception as e:
+                        logger.error(f"Failed to delete orphaned trade {local_trade_id}: {e}")
+        
+        return {
+            "status": "ok",
+            "checked": len(local_open_trades),
+            "deleted": deleted_count,
+            "deleted_trade_ids": deleted_trade_ids,
+            "platform_trades": len(platform_trades)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Trade sync failed for bot {bot.id}: {e}")
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Trade sync failed",
+                "exception": str(e)
+            }
+        )
 
 
 @router.patch("/{user_id}/bots/{bot_id}/mode", response_model=BotRead)
