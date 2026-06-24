@@ -695,6 +695,8 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
     name = _docker_container_name(bot)
     if _docker_is_running(name):
         raise HTTPException(status_code=409, detail={"message": "Bot container is already running", "container": name})
+    # Clean up any stopped containers with the same name to avoid conflicts
+    _docker_remove_container(name)
     # Ensure required runtime fields prior to running (single source of truth)
     # NOTE: Timeframe is now optional at this pre-start phase. If it's only
     #       defined inside the Strategy class (and absent in config), we allow
