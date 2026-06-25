@@ -410,7 +410,7 @@ def _download_data_sync(user_root: Path, bot_userdir: Path, exchange: str, pairs
         timerange = _normalize_timerange(timerange)
     except Exception:
         pass
-    base_cmd = ["docker", "run", "--user", f"{os.getuid()}:{os.getgid()}"]
+    base_cmd = ["docker", "run"]
     for v in volumes:
         base_cmd += ["-v", v]
     base_cmd += ["-e", f"PYTHONPATH={docker_py_path}"]
@@ -770,7 +770,6 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
     _docker_image_ensure(image, out_log)
     cmd = [
         "docker", "run", "-d",
-        "--user", f"{os.getuid()}:{os.getgid()}",
         "--name", name,
         # Map chosen host port -> container listen_port (from config)
         "-p", f"127.0.0.1:{host_port}:{container_port}",
@@ -1111,7 +1110,7 @@ def start_backtest(db: Session, user: User, bot: Bot, params: BacktestStartReque
         docker_py_path = f"{docker_py_path}:/freqtrade/extra_strategies"
     image = _get_freqtrade_image()
     _docker_image_ensure(image, out_log)
-    cmd = ["docker", "run", "-d", "--user", f"{os.getuid()}:{os.getgid()}", "--name", name]
+    cmd = ["docker", "run", "-d", "--name", name]
     for v in volumes:
         cmd += ["-v", v]
     cmd += ["-e", f"PYTHONPATH={docker_py_path}"]
@@ -2062,7 +2061,7 @@ def download_data(db: Session, user: User, bot: Bot, timerange: str, pairs_overr
         docker_py_path = f"{docker_py_path}:/freqtrade/extra_strategies"
     image = _get_freqtrade_image()
     _docker_image_ensure(image, out_log)
-    cmd = ["docker", "run", "-d", "--user", f"{os.getuid()}:{os.getgid()}", "--name", name]
+    cmd = ["docker", "run", "-d", "--name", name]
     for v in volumes:
         cmd += ["-v", v]
     cmd += ["-e", f"PYTHONPATH={docker_py_path}"]
