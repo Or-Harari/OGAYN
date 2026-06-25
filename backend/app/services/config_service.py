@@ -10,16 +10,16 @@ import secrets
 
 
 def _ensure_group_writable_dir(path: Path) -> None:
-    """Ensure directory exists with group-writable permissions and setgid bit.
+    """Ensure directory exists with group-writable permissions.
     
     This allows both the backend (ftbot user) and Docker containers (UID 1000)
     to read/write files when they're in the same group (ftgroup).
+    Directories should be owned by UID 1000:ftgroup for proper Docker access.
     """
     try:
         path.mkdir(parents=True, exist_ok=True)
-        # Set permissions: 2775 = setgid bit + rwxrwxr-x
-        # The setgid bit (2) ensures new files inherit the group
-        os.chmod(path, 0o2775)
+        # Set permissions: 775 = rwxrwxr-x (owner and group both have full access)
+        os.chmod(path, 0o775)
     except Exception:
         pass  # Best effort
 
