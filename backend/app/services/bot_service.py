@@ -19,6 +19,21 @@ from fastapi import HTTPException
 from .config_service import compose_bot_config, compose_runtime_config, validate_user_and_bot  # legacy kept
 from ..schemas import BacktestStartRequest
 
+def _ensure_group_writable_dir(path: Path) -> None:
+    """Ensure directory exists with group-writable permissions and setgid bit.
+    
+    This allows both the backend (ftbot user) and Docker containers (UID 1000)
+    to read/write files when they're in the same group (ftgroup).
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        # Set permissions: 2775 = setgid bit + rwxrwxr-x
+        # The setgid bit (2) ensures new files inherit the group
+        os.chmod(path, 0o2775)
+    except Exception:
+        pass  # Best effort
+
+
 def _docker_available() -> bool:
     try:
         subprocess.run(["docker", "--version"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
@@ -227,7 +242,7 @@ def _containerize_strategy_path(user_root: Path, bot_userdir: Path, host_path: s
 
 def _log_command(out_log: Path, cmd: list[str], env_additions: dict[str, str]) -> None:
     line = f"\n==== BOT START {time.strftime('%Y-%m-%d %H:%M:%S')} ===\nCMD: {' '.join(cmd)}\nENV_ADD: {json.dumps(env_additions)}\n"
-    out_log.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(out_log.parent)
     with out_log.open("ab") as f:
         f.write(line.encode("utf-8", errors="ignore"))
 
@@ -388,7 +403,7 @@ def _download_data_sync(user_root: Path, bot_userdir: Path, exchange: str, pairs
     Logs will be written to user_data/logs/download-data.*.log.
     """
     logs_dir = bot_userdir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(logs_dir)
     out_log = logs_dir / "download-data.out.log"
     err_log = logs_dir / "download-data.err.log"
 
@@ -685,7 +700,7 @@ def start_bot(db: Session, user: User, bot: Bot, config_path: Optional[str] = No
     # Backstage no longer auto-triggers download-data; keep start minimal per simplified design
 
     logs_dir = bot_userdir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(logs_dir)
     out_log = logs_dir / "bot.out.log"
     err_log = logs_dir / "bot.err.log"
 
@@ -942,7 +957,7 @@ def start_backtest(db: Session, user: User, bot: Bot, params: BacktestStartReque
         cfg_path = compose_runtime_config(str(bot_userdir))
 
     logs_dir = bot_userdir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(logs_dir)
     out_log = logs_dir / "backtest.out.log"
     err_log = logs_dir / "backtest.err.log"
 
@@ -1040,7 +1055,7 @@ def start_backtest(db: Session, user: User, bot: Bot, params: BacktestStartReque
         debug_log = logs_dir / "backtest.debug.log"
         def _dbg(msg: str) -> None:
             try:
-                debug_log.parent.mkdir(parents=True, exist_ok=True)
+                _ensure_group_writable_dir(debug_log.parent)
                 with debug_log.open("a", encoding="utf-8") as df:
                     ts = time.strftime("%Y-%m-%d %H:%M:%S")
                     df.write(f"[{ts}] {msg}\n")
@@ -1991,7 +2006,7 @@ def download_data(db: Session, user: User, bot: Bot, timerange: str, pairs_overr
         timeframes = _import_strategy_timeframes(str(cfg_path))
 
     logs_dir = bot_userdir / "logs"
-    logs_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(logs_dir)
     out_log = logs_dir / "download-data.out.log"
     err_log = logs_dir / "download-data.err.log"
 

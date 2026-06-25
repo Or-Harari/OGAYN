@@ -5,6 +5,21 @@ from pathlib import Path
 from typing import Optional
 
 
+def _ensure_group_writable_dir(path: Path) -> None:
+    """Ensure directory exists with group-writable permissions and setgid bit.
+    
+    This allows both the backend (ftbot user) and Docker containers (UID 1000)
+    to read/write files when they're in the same group (ftgroup).
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        # Set permissions: 2775 = setgid bit + rwxrwxr-x
+        # The setgid bit (2) ensures new files inherit the group
+        os.chmod(path, 0o2775)
+    except Exception:
+        pass  # Best effort
+
+
 def _project_root() -> Path:
     # backend/app/services -> project root at ../../..
     return Path(__file__).resolve().parents[3]
@@ -36,9 +51,9 @@ def create_workspace(name: str, base_dir: Optional[str] = None) -> str:
     """
     base = Path(base_dir or default_workspaces_base()).expanduser().resolve()
     user_root = base / name / "user"
-    (user_root / "configs" / "user").mkdir(parents=True, exist_ok=True)
-    (user_root / "strategies").mkdir(parents=True, exist_ok=True)
-    (user_root / "shared").mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(user_root / "configs" / "user")
+    _ensure_group_writable_dir(user_root / "strategies")
+    _ensure_group_writable_dir(user_root / "shared")
     # Seed base configs if missing
     account_path = user_root / "configs" / "account.json"
     meta_path = user_root / "configs" / "meta.json"
@@ -75,10 +90,10 @@ def create_bot_workspace(user_root: str, bot_name: str) -> str:
     """
     uroot = Path(user_root).expanduser().resolve()
     bots_root = uroot.parent / "bots" / bot_name / "user_data"
-    (bots_root / "configs").mkdir(parents=True, exist_ok=True)
-    (bots_root / "logs").mkdir(parents=True, exist_ok=True)
-    (bots_root / "data").mkdir(parents=True, exist_ok=True)
-    (bots_root / "strategies").mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(bots_root / "configs")
+    _ensure_group_writable_dir(bots_root / "logs")
+    _ensure_group_writable_dir(bots_root / "data")
+    _ensure_group_writable_dir(bots_root / "strategies")
     # Seed bot.json if missing
     bot_cfg = bots_root / "configs" / "bot.json"
     if not bot_cfg.exists():
@@ -133,7 +148,7 @@ def validate_workspace(path: str) -> str:
     if p.name != 'user_data':
         raise ValueError("Workspace must be 'user_data' or contain a 'user_data' folder")
     # Ensure strategies folder exists
-    (p / 'strategies' / '_strategies').mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(p / 'strategies' / '_strategies')
     init_path = p / 'strategies' / '_strategies' / '__init__.py'
     if not init_path.exists():
         init_path.write_text("", encoding='utf-8')

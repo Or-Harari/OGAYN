@@ -9,6 +9,21 @@ import socket
 import secrets
 
 
+def _ensure_group_writable_dir(path: Path) -> None:
+    """Ensure directory exists with group-writable permissions and setgid bit.
+    
+    This allows both the backend (ftbot user) and Docker containers (UID 1000)
+    to read/write files when they're in the same group (ftgroup).
+    """
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        # Set permissions: 2775 = setgid bit + rwxrwxr-x
+        # The setgid bit (2) ensures new files inherit the group
+        os.chmod(path, 0o2775)
+    except Exception:
+        pass  # Best effort
+
+
 def _resolve_config_path(workspace_root: str) -> Path:
     ws = Path(workspace_root)
     # Prefer new structured config under configs/ for meta-only fallback
@@ -102,7 +117,7 @@ def load_meta_config(workspace_root: str) -> Dict[str, Any]:
 def save_meta_config(meta: Dict[str, Any], workspace_root: str) -> Dict[str, Any]:
     # Prefer writing to new configs/meta.json
     meta_path = _meta_file_path(workspace_root)
-    meta_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(meta_path.parent)
     try:
         with meta_path.open("w", encoding="utf-8") as f:
             json.dump(meta or {}, f, indent=2, ensure_ascii=False)
@@ -133,7 +148,7 @@ def load_account_config(workspace_root: str) -> Dict[str, Any]:
 
 def save_account_config(data: Dict[str, Any], workspace_root: str) -> Dict[str, Any]:
     p = _account_file_path(workspace_root)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(p.parent)
     with p.open("w", encoding="utf-8") as f:
         json.dump(data or {}, f, indent=2, ensure_ascii=False)
     return data or {}
@@ -207,7 +222,7 @@ def load_bot_config(workspace_root: str) -> Dict[str, Any]:
 def save_bot_config(data: Dict[str, Any], workspace_root: str) -> Dict[str, Any]:
     """Atomically write bot.json to avoid corruption during concurrent writes."""
     p = _bot_file_path(workspace_root)
-    p.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(p.parent)
     tmp_fd, tmp_path = tempfile.mkstemp(prefix="bot.json.", suffix=".tmp", dir=str(p.parent))
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
@@ -577,7 +592,7 @@ def _finalize_and_write_cfg(cfg: Dict[str, Any], meta: Dict[str, Any], out_path:
             cfg["pairs"] = list(pw)
         else:
             cfg["pairs"] = pw
-    out_path.parent.mkdir(parents=True, exist_ok=True)
+    _ensure_group_writable_dir(out_path.parent)
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
     # Optional sources map for debugging
