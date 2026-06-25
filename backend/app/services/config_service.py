@@ -121,6 +121,11 @@ def save_meta_config(meta: Dict[str, Any], workspace_root: str) -> Dict[str, Any
     try:
         with meta_path.open("w", encoding="utf-8") as f:
             json.dump(meta or {}, f, indent=2, ensure_ascii=False)
+        # Fix permissions for ACL mask
+        try:
+            os.chmod(meta_path, 0o664)
+        except Exception:
+            pass
         merged = json.loads(json.dumps(DEFAULT_META))
         return _deep_merge(merged, meta or {})
     except Exception:
@@ -151,6 +156,11 @@ def save_account_config(data: Dict[str, Any], workspace_root: str) -> Dict[str, 
     _ensure_group_writable_dir(p.parent)
     with p.open("w", encoding="utf-8") as f:
         json.dump(data or {}, f, indent=2, ensure_ascii=False)
+    # Fix permissions for ACL mask
+    try:
+        os.chmod(p, 0o664)
+    except Exception:
+        pass
     return data or {}
 
 
@@ -230,6 +240,12 @@ def save_bot_config(data: Dict[str, Any], workspace_root: str) -> Dict[str, Any]
             f.flush()
             os.fsync(f.fileno())
         os.replace(tmp_path, p)
+        # Fix permissions so both ftbot and Docker can read/write
+        # This also fixes the ACL mask which tempfile.mkstemp sets to ---
+        try:
+            os.chmod(p, 0o664)
+        except Exception:
+            pass
     finally:
         try:
             if os.path.exists(tmp_path):
@@ -595,6 +611,11 @@ def _finalize_and_write_cfg(cfg: Dict[str, Any], meta: Dict[str, Any], out_path:
     _ensure_group_writable_dir(out_path.parent)
     with out_path.open("w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2, ensure_ascii=False)
+    # Fix permissions for ACL mask
+    try:
+        os.chmod(out_path, 0o664)
+    except Exception:
+        pass
     # Optional sources map for debugging
     if out_path.parent.joinpath("..", "..").exists() and bool(int(os.environ.get("FT_CONFIG_DEBUG", "0"))):  # type: ignore
         src_manifest = {label: str(path) for label, path in sources}
