@@ -6,7 +6,8 @@ Wants=network-online.target
 [Service]
 Type=exec
 User=ftbot
-Group=ftbot
+Group=ftgroup
+UMask=0002
 WorkingDirectory=/opt/ft-bot
 EnvironmentFile=/opt/ft-bot/.env.production
 
