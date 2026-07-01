@@ -7,8 +7,10 @@ import { Navigation } from '@/components/Navigation'
 import { Dashboard } from '@/pages/Dashboard'
 import { Bots } from '@/pages/Bots'
 import Toaster from '@/components/Toaster'
-import { BacktestConfig } from './BacktestConfig'
+import { BacktestNew } from './BacktestNew'
 import { Settings } from './Settings'
+import { Markets } from './Markets'
+import { Scanners } from './Scanners'
 import { RequireAuth } from '@/components/RequireAuth'
 
 export default function App() {
@@ -29,7 +31,9 @@ export default function App() {
         <Routes>
           <Route path="/" element={<RequireAuth><Dashboard /></RequireAuth>} />
           <Route path="/bots" element={<RequireAuth><Bots /></RequireAuth>} />
-          <Route path="/backtest" element={<RequireAuth><BacktestConfig /></RequireAuth>} />
+          <Route path="/markets" element={<RequireAuth><Markets /></RequireAuth>} />
+          <Route path="/scanners" element={<RequireAuth><Scanners /></RequireAuth>} />
+          <Route path="/backtest" element={<RequireAuth><BacktestNew /></RequireAuth>} />
           <Route path="/settings" element={<RequireAuth><Settings /></RequireAuth>} />
           <Route path="/login" element={<LoginForm />} />
         </Routes>

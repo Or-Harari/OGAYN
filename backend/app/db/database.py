@@ -17,8 +17,33 @@ except Exception:
     pass
 SQLALCHEMY_DATABASE_URL = f"sqlite:///{DB_PATH}"
 
-engine = create_engine(SQLALCHEMY_DATABASE_URL, connect_args={"check_same_thread": False})
+# Configure engine with better settings for concurrent access
+engine = create_engine(
+    SQLALCHEMY_DATABASE_URL, 
+    connect_args={
+        "check_same_thread": False,
+        "timeout": 30  # Increase timeout to 30 seconds for database locks
+    },
+    pool_pre_ping=True,  # Verify connections before using them
+    pool_recycle=3600,  # Recycle connections after 1 hour
+)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+
+
+# Enable WAL mode for better concurrent access
+def _enable_wal_mode():
+    """Enable Write-Ahead Logging for better concurrent access."""
+    import sqlite3
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.execute('PRAGMA journal_mode=WAL;')
+        conn.execute('PRAGMA synchronous=NORMAL;')
+        conn.close()
+    except Exception:
+        pass
+
+
+_enable_wal_mode()
 
 
 class Base(DeclarativeBase):

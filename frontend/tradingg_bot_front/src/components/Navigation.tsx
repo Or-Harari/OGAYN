@@ -12,6 +12,8 @@ export function Navigation() {
       <ul className="nav-list">
         <li><NavLink to="/" end className={({isActive}) => isActive ? 'active' : ''}>Dashboard</NavLink></li>
         <li><NavLink to="/bots" className={({isActive}) => isActive ? 'active' : ''}>Bots</NavLink></li>
+        <li><NavLink to="/markets" className={({isActive}) => isActive ? 'active' : ''}>Markets</NavLink></li>
+        <li><NavLink to="/scanners" className={({isActive}) => isActive ? 'active' : ''}>Scanners</NavLink></li>
         <li><NavLink to="/backtest" className={({isActive}) => isActive ? 'active' : ''}>Backtest</NavLink></li>
         <li><NavLink to="/settings" className={({isActive}) => isActive ? 'active' : ''}>Settings</NavLink></li>
       </ul>

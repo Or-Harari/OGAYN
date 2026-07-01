@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-from sqlalchemy import Column, Integer, String
+from sqlalchemy import Column, Integer, String, Float, Text, Boolean, DateTime, ForeignKey
+from sqlalchemy.sql import func
 from .database import Base
 
 
@@ -56,3 +57,96 @@ class Bot(Base):
             return None
         except Exception:
             return None
+
+
+class ScannerConfig(Base):
+    __tablename__ = "scanner_configs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    name = Column(String, index=True, nullable=False)  # scanner name (user-friendly, filesystem-safe)
+    exchange = Column(String, default="binance", nullable=False)
+    market_type = Column(String, default="futures", nullable=False)  # futures | spot
+    enabled = Column(Boolean, default=True, nullable=False)
+    interval_minutes = Column(Integer, default=5, nullable=False)
+    
+    # Configuration stored as JSON
+    config_json = Column(Text, nullable=False, default="{}")
+    # Contains: quoteAsset, maxPairs, minMarketScore, includeSymbols, excludeSymbols,
+    # scoringWeights, scoringThresholds
+    
+    output_base_path = Column(String, nullable=True)  # Computed path: user_data/users/{userId}/scanners/{name}
+    
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+
+
+class MarketSnapshot(Base):
+    __tablename__ = "market_snapshots"
+
+    id = Column(Integer, primary_key=True, index=True)
+    timestamp = Column(Integer, index=True, nullable=False)
+    exchange = Column(String, index=True, nullable=False, default="binance")
+    symbol = Column(String, index=True, nullable=False)
+    
+    # Multi-scanner support
+    scanner_id = Column(Integer, ForeignKey("scanner_configs.id"), index=True, nullable=True)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=True)
+
+    price = Column(Float, nullable=True)
+    volume = Column(Float, nullable=True)
+    atr = Column(Float, nullable=True)
+    spread = Column(Float, nullable=True)
+
+    funding = Column(Float, nullable=True)
+
+    liquidity_score = Column(Integer, nullable=False, default=0)
+    spread_score = Column(Integer, nullable=False, default=0)
+    atr_score = Column(Integer, nullable=False, default=0)
+
+    funding_score = Column(Integer, nullable=False, default=0)
+    tick_score = Column(Integer, nullable=False, default=0)
+
+    market_quality = Column(Integer, index=True, nullable=False, default=0)
+
+    reasons_json = Column(Text, nullable=False, default="{}")
+    raw_data_json = Column(Text, nullable=False, default="{}")
+
+
+class ScannerOutput(Base):
+    """
+    Current scanner output - represents the latest symbols that meet scanner criteria.
+    This table is cleared and refreshed on each scanner run (fresh data).
+    Used by frontend for viewing scanner results.
+    """
+    __tablename__ = "scanner_outputs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    scanner_id = Column(Integer, ForeignKey("scanner_configs.id"), index=True, nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), index=True, nullable=False)
+    
+    # When this output was generated
+    generated_at = Column(Integer, index=True, nullable=False)
+    
+    # Symbol information
+    symbol = Column(String, index=True, nullable=False)
+    exchange = Column(String, nullable=False, default="binance")
+    rank = Column(Integer, nullable=False)  # Position in sorted list (1 = best)
+    
+    # Market data
+    price = Column(Float, nullable=False)
+    volume = Column(Float, nullable=False)
+    atr = Column(Float, nullable=False)
+    spread = Column(Float, nullable=False)
+    funding = Column(Float, nullable=True)
+    
+    # Scores
+    total_score = Column(Integer, index=True, nullable=False)
+    liquidity_score = Column(Integer, nullable=False, default=0)
+    volatility_score = Column(Integer, nullable=False, default=0)
+    spread_score = Column(Integer, nullable=False, default=0)
+    funding_score = Column(Integer, nullable=False, default=0)
+    tick_score = Column(Integer, nullable=False, default=0)
+    
+    # Additional metadata
+    reasons_json = Column(Text, nullable=False, default="{}")  # Detailed scoring reasons

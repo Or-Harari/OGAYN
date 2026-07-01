@@ -1,0 +1,106 @@
+[PUBLIC_SUB] URL: wss://fstream.binance.com/public/stream?streams=!bookTicker
+[PUBLIC_SUB] streams: !bookTicker
+
+[MARKET_SUB] URL: wss://fstream.binance.com/market/stream?streams=!ticker@arr/!miniTicker@arr/!markPrice@arr
+[MARKET_SUB] streams: !ticker@arr/!miniTicker@arr/!markPrice@arr
+
+[MSG #1] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #2] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #3] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #4] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #5] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #6] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #7] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #8] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #9] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #10] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #11] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #12] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #13] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #14] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #15] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #16] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #17] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #18] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #19] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #20] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #21] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #22] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #23] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #24] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #25] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #26] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #27] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #28] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #29] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #30] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #31] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #32] stream='!ticker_4h@arr', type=list, len=77, first_item_keys=['e', 'E', 's', 'p', 'P', 'w', 'o', 'h']
+[MSG #33] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #34] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #35] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #36] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #37] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #38] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #39] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #40] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #41] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #42] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #43] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #44] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #45] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #46] stream='!ticker_1h@arr', type=list, len=77, first_item_keys=['e', 'E', 's', 'p', 'P', 'w', 'o', 'h']
+[MSG #47] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #48] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #49] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[MSG #50] stream='!bookTicker', type=dict, keys=['e', 'u', 's', 'ps', 'b', 'B', 'a', 'A']
+[TICKER_SAVE] RKLBUSDT -> price=102.38000, vol=37024526.15430, count=1
+[TICKER_SAVE] MORPHOUSDT -> price=2.1496000, vol=36784378.6413500, count=2
+[TICKER_SAVE] SPXUSDT -> price=0.3586000, vol=7190079.4627000, count=3
+[TICKER_SAVE] AEROUSDT -> price=0.4816000, vol=12083784.1072000, count=4
+[TICKER_SAVE] XAGUSDT -> price=59.8100, vol=1226082115.6965, count=5
+
+[BUILD_CACHE_START] book_count=713, ticker_count=677
+[CACHE_BUILD] SSVUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=1252010.18283
+[CACHE_BUILD] WUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=4923765.4169
+[CACHE_BUILD] NOTUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=2642116.0206535
+
+[BUILD_CACHE_START] book_count=714, ticker_count=680
+[CACHE_BUILD] SSVUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=1248240.0448
+[CACHE_BUILD] WUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=4925760.415646
+[CACHE_BUILD] NOTUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=2637146.7136325
+
+[BUILD_CACHE_START] book_count=714, ticker_count=682
+[CACHE_BUILD] SSVUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=1247804.79911
+[CACHE_BUILD] WUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=4927597.45911
+[CACHE_BUILD] NOTUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=2637254.7402472
+
+[BUILD_CACHE_START] book_count=714, ticker_count=682
+[CACHE_BUILD] SSVUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=1247875.1858
+[CACHE_BUILD] WUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=4928398.946939
+[CACHE_BUILD] NOTUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=2609157.5832843
+
+[BUILD_CACHE_START] book_count=714, ticker_count=683
+[CACHE_BUILD] SSVUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=1247929.56032
+[CACHE_BUILD] WUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=4929258.043477
+[CACHE_BUILD] NOTUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=2607683.1813649
+
+[BUILD_CACHE_START] book_count=714, ticker_count=683
+[CACHE_BUILD] SSVUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=1248485.0868
+[CACHE_BUILD] WUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=4929159.127705
+[CACHE_BUILD] NOTUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=2609057.6752055
+
+[BUILD_CACHE_START] book_count=714, ticker_count=683
+[CACHE_BUILD] SSVUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=1248979.99431
+[CACHE_BUILD] WUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=4939973.415844
+[CACHE_BUILD] NOTUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=2599484.3685547
+
+[BUILD_CACHE_START] book_count=714, ticker_count=684
+[CACHE_BUILD] SSVUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=1248184.84104
+[CACHE_BUILD] WUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=4947372.153093
+[CACHE_BUILD] NOTUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=2592829.8626617
+
+[BUILD_CACHE_START] book_count=714, ticker_count=684
+[CACHE_BUILD] SSVUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=1248277.31234
+[CACHE_BUILD] WUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=4950792.528394
+[CACHE_BUILD] NOTUSDT -> ticker_keys=['symbol', 'last_price', 'quote_volume', 'timestamp'], quote_vol=2583880.6805196

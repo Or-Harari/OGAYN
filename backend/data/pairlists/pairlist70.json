@@ -1,0 +1,14 @@
+{
+  "pairs": [
+    "HYPE/USDT",
+    "ZEC/USDT",
+    "BTC/USDT",
+    "ETH/USDT",
+    "XRP/USDT",
+    "BNB/USDT",
+    "SLX/USDT",
+    "SYN/USDT",
+    "1000PEPE/USDT"
+  ],
+  "refresh_period": 300
+}

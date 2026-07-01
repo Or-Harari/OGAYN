@@ -90,6 +90,8 @@ class UserConfigPatch(BaseModel):
 
 class BotConfigPatch(BaseModel):
     pair_whitelist: list[str] | None = None
+    pair_blacklist: list[str] | None = None  # Pairlist blacklist
+    pairlists: list[Dict[str, Any]] | None = None  # Freqtrade pairlist handlers
     stake_currency: str | None = None
     stake_amount: float | str | None = None
     trading_mode: Literal['spot', 'futures'] | None = None
@@ -106,6 +108,9 @@ class BotConfigPatch(BaseModel):
     strategy: str | None = None  # single source of truth for strategy class name
     # Trading controls extensions
     available_capital: float | None = None
+    fiat_display_currency: str | None = None
+    entry_pricing: Dict[str, Any] | None = None
+    exit_pricing: Dict[str, Any] | None = None
 
 
 class BotModeUpdate(BaseModel):

@@ -5,7 +5,9 @@ import { useData } from '@/stores/data'
 import { api } from '@/lib/api'
 import CreateBotForm, { CreateBotFormValues } from '@/components/CreateBotForm'
 import BotControls from '@/components/BotControls'
+import PairlistConfig from '@/components/PairlistConfig'
 import { useUI } from '@/stores/ui'
+import { useEffectivePairs } from '@/hooks/useEffectivePairs'
 import './Bots.css'
 
 import LiveAnalyticsContainer from '@/components/chart/LiveAnalyticsContainer'
@@ -70,6 +72,8 @@ export function Bots() {
   const [formStakeCurrency, setFormStakeCurrency] = useState<string>('USDT')
   const [formStakeAmount, setFormStakeAmount] = useState<string>('10')
   const [formPairsText, setFormPairsText] = useState<string>('')
+  const [formPairBlacklistText, setFormPairBlacklistText] = useState<string>('')
+  const [formPairlists, setFormPairlists] = useState<Array<{method: string; [key: string]: any}>>([])
   const [formTradingMode, setFormTradingMode] = useState<'spot' | 'futures'>('spot')
   const [formMarginMode, setFormMarginMode] = useState<string>('cross')
   const [formLiquidationBuffer, setFormLiquidationBuffer] = useState<string>('0.0')
@@ -145,6 +149,10 @@ export function Bots() {
   const [configSubTab, setConfigSubTab] = useState<'form'|'raw'>('form')
   const [rawConfigText, setRawConfigText] = useState<string>('')
 
+  // Get effective pairs for selected bot (includes RemotePairList support)
+  const selectedConfig = selectedId ? details[selectedId]?.config : null
+  const effectivePairs = useEffectivePairs(selectedConfig, userId || undefined)
+
   const formatError = (val: any): string => {
     if (val == null) return 'Unknown error'
     if (typeof val === 'string') return val
@@ -216,7 +224,7 @@ export function Bots() {
   useEffect(() => {
     const b = selected; if (!b) return
     const cfg = details[b.id]?.config || {}
-    const ps = cfgPairs(cfg)
+    const ps = effectivePairs
     const tfs = cfgTimeframes(cfg)
     setLivePair(prev => (!ps.length ? null : (prev && ps.includes(prev)) ? prev : ps[0]))
     setLiveTf(prev => (!tfs.length ? null : (prev && tfs.includes(prev)) ? prev : tfs[0]))
@@ -229,6 +237,10 @@ export function Bots() {
       setFormStakeAmount(String(cfg?.stake_amount ?? '10'))
       const pairs = cfgPairs(cfg)
       setFormPairsText(Array.isArray(pairs) ? pairs.join('\n') : '')
+      const blacklist = cfg?.pair_blacklist || []
+      setFormPairBlacklistText(Array.isArray(blacklist) ? blacklist.join(', ') : '')
+      const pairlists = cfg?.pairlists || []
+      setFormPairlists(Array.isArray(pairlists) ? pairlists : [])
       setFormMarginMode(String(cfg?.margin_mode || 'cross'))
       setFormLiquidationBuffer(String(cfg?.liquidation_buffer ?? '0.0'))
       try { setFormLeverage(Number(cfg?.leverage ?? 1) || 1) } catch { setFormLeverage(1) }
@@ -255,7 +267,7 @@ export function Bots() {
       setExitDepthEnabled(!!xd?.enabled)
       setExitDepthBidsToAskDelta(Number(xd?.bids_to_ask_delta || 0))
     } catch {}
-  }, [selected?.id, details[selected?.id || -1]?.config])
+  }, [selected?.id, details[selected?.id || -1]?.config, effectivePairs])
 
   useEffect(() => {
     try {
@@ -530,7 +542,7 @@ export function Bots() {
                     const starting = !!d?.starting
                     const stopping = !!d?.stopping
                     const cfg = details[selected.id]?.config || {}
-                    const ps = cfgPairs(cfg)
+                    const ps = effectivePairs
                     return (
                       <div className="sidebar" style={{ borderRight: '1px solid #e5e7eb', paddingRight: 12 }}>
                         <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 8, flexWrap: 'wrap' }}>
@@ -556,7 +568,18 @@ export function Bots() {
                         </div>
 
                         <div style={{ border: '1px solid #e5e7eb', borderRadius: 6, overflow: 'hidden' }}>
-                          <div style={{ padding: 8, borderBottom: '1px solid #e5e7eb', background: '#f9fafb', fontWeight: 600 }}>Pairs</div>
+                          <div style={{ padding: 8, borderBottom: '1px solid #e5e7eb', background: '#f9fafb', fontWeight: 600, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                            <span>Pairs</span>
+                            {(() => {
+                              const pairlists = cfg?.pairlists || []
+                              const hasRemote = pairlists.some((pl: any) => pl.method === 'RemotePairList' && pl.scanner_id)
+                              return hasRemote ? (
+                                <span style={{ fontSize: 10, background: '#dbeafe', color: '#1e40af', padding: '2px 6px', borderRadius: 4, fontWeight: 500 }}>
+                                  🔄 Scanner
+                                </span>
+                              ) : null
+                            })()}
+                          </div>
                           <div style={{ maxHeight: 360, overflow: 'auto' }}>
                             {ps.map((p: string) => { const r = Number(pairProfitMap[p] || 0); const badge = isNaN(r) ? '' : `${(r*100).toFixed(2)}%`; const badgeStyle = r < 0 ? { color: '#dc2626', border: '1px solid #ef4444', borderRadius: 6, padding: '2px 6px' } : { color: '#16a34a', border: '1px solid #16a34a', borderRadius: 6, padding: '2px 6px' }; return (<div key={p} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: 8, borderBottom: '1px solid #f3f4f6', background: livePair === p ? '#eef2ff' : '#fff', cursor: 'pointer' }} onClick={() => setLivePair(p)}><span>{p}</span><span style={badgeStyle}>{badge}</span></div>) })}
                           </div>
@@ -699,7 +722,7 @@ export function Bots() {
                         if (disabled) { notifyError('Stop the bot before updating config'); return }
                         try {
                           const obj = JSON.parse(rawConfigText)
-                          const allowed = ['pair_whitelist','stake_currency','stake_amount','dry_run','dry_run_wallet','meta','trading_mode','margin_mode','liquidation_buffer','leverage','strategy','timeframe','fiat_display_currency','available_capital','entry_pricing','exit_pricing']
+                          const allowed = ['pair_whitelist','pair_blacklist','pairlists','stake_currency','stake_amount','dry_run','dry_run_wallet','meta','trading_mode','margin_mode','liquidation_buffer','leverage','strategy','timeframe','fiat_display_currency','available_capital','entry_pricing','exit_pricing']
                           const patch: any = {}
                           for (const k of allowed) if (k in obj) patch[k] = obj[k]
                           await api.patch(`/config/bot/${selected.id}`, patch)
@@ -712,10 +735,13 @@ export function Bots() {
                         if (disabled) { notifyError('Stop the bot before updating config'); return }
                         try {
                           const pairs = formPairsText.split(/\r?\n|,\s*/).map(s => s.trim()).filter(s => s.length > 0)
+                          const blacklist = formPairBlacklistText.split(/\r?\n|,\s*/).map(s => s.trim()).filter(s => s.length > 0)
                           const patch: any = {
                             stake_currency: formStakeCurrency,
                             stake_amount: isNaN(Number(formStakeAmount)) ? formStakeAmount : Number(formStakeAmount),
                             pair_whitelist: pairs,
+                            pair_blacklist: blacklist.length > 0 ? blacklist : undefined,
+                            pairlists: formPairlists.length > 0 ? formPairlists : undefined,
                             trading_mode: formTradingMode,
                             margin_mode: formTradingMode === 'futures' ? formMarginMode : undefined,
                             liquidation_buffer: formTradingMode === 'futures' ? Number(formLiquidationBuffer || 0) : undefined,
@@ -784,6 +810,16 @@ export function Bots() {
                               <div style={{ gridColumn:'1 / span 2' }}>
                                 <label style={{ display:'block', fontSize:12 }}>Pairs (one per line)</label>
                                 <textarea value={formPairsText} onChange={e=>setFormPairsText(e.target.value)} disabled={disabled} style={{ width:'100%', minHeight: 120, border:'1px solid #e5e7eb', borderRadius:6, padding:6 }} />
+                              </div>
+                              <div style={{ gridColumn:'1 / span 2' }}>
+                                <PairlistConfig 
+                                  pairBlacklist={formPairBlacklistText}
+                                  pairlists={formPairlists}
+                                  onPairBlacklistChange={setFormPairBlacklistText}
+                                  onPairlistsChange={setFormPairlists}
+                                  disabled={disabled}
+                                  userId={userId || undefined}
+                                />
                               </div>
                               <div>
                                 <label style={{ display:'block', fontSize:12 }}>Strategy</label>
@@ -897,7 +933,7 @@ export function Bots() {
                               </div>
                               <div style={{ gridColumn:'1 / span 2', display:'flex', gap:8 }}>
                                 <button onClick={saveForm} disabled={disabled} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #2563eb', background: disabled ? '#e5e7eb' : '#2563eb', color:'#fff' }}>Save</button>
-                                <button onClick={()=>{ const cfg = details[selected.id]?.config || {}; setFormStakeCurrency(String(cfg?.stake_currency || 'USDT')); setFormStakeAmount(String(cfg?.stake_amount ?? '10')); const pairs = cfgPairs(cfg); setFormPairsText(Array.isArray(pairs) ? pairs.join('\n') : ''); const tm = String(cfg?.trading_mode || 'spot').toLowerCase(); setFormTradingMode(tm === 'futures' ? 'futures' : 'spot'); setFormMarginMode(String(cfg?.margin_mode || 'cross')); setFormLiquidationBuffer(String(cfg?.liquidation_buffer ?? '0.0')); try { setFormLeverage(Number(cfg?.leverage ?? 1) || 1) } catch { setFormLeverage(1) } const dw = cfg?.dry_run_wallet; if (typeof dw === 'object') { try { setFormDryRunWallet(JSON.stringify(dw)) } catch { setFormDryRunWallet('') } } else if (dw != null) { setFormDryRunWallet(String(dw)) } else { setFormDryRunWallet('') } setFormFiatDisplayCurrency(String(cfg?.fiat_display_currency || 'USD')); setFormAvailableCapital(cfg?.available_capital != null ? String(cfg?.available_capital) : ''); setFormStrategyName(String(cfg?.strategy || '')); const ep = (cfg?.entry_pricing || {}); setEntryPriceSide((ep?.price_side || 'same') as any); setEntryUseOrderBook(!!ep?.use_order_book); setEntryOrderBookTop(Number(ep?.order_book_top || 1)); setEntryPriceLastBalance(Number(ep?.price_last_balance || 0)); const ed = ep?.check_depth_of_market || {}; setEntryDepthEnabled(!!ed?.enabled); setEntryDepthBidsToAskDelta(Number(ed?.bids_to_ask_delta || 0)); const xp = (cfg?.exit_pricing || {}); setExitPriceSide((xp?.price_side || 'same') as any); setExitUseOrderBook(!!xp?.use_order_book); setExitOrderBookTop(Number(xp?.order_book_top || 1)); setExitPriceLastBalance(Number(xp?.price_last_balance || 0)); const xd = xp?.check_depth_of_market || {}; setExitDepthEnabled(!!xd?.enabled); setExitDepthBidsToAskDelta(Number(xd?.bids_to_ask_delta || 0)); }} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #6b7280', background:'#fff' }}>Reset</button>
+                                <button onClick={()=>{ const cfg = details[selected.id]?.config || {}; setFormStakeCurrency(String(cfg?.stake_currency || 'USDT')); setFormStakeAmount(String(cfg?.stake_amount ?? '10')); const pairs = cfgPairs(cfg); setFormPairsText(Array.isArray(pairs) ? pairs.join('\n') : ''); const blacklist = cfg?.pair_blacklist; setFormPairBlacklistText(Array.isArray(blacklist) ? blacklist.join(', ') : ''); const pairlists = cfg?.pairlists; setFormPairlists(Array.isArray(pairlists) ? pairlists : []); const tm = String(cfg?.trading_mode || 'spot').toLowerCase(); setFormTradingMode(tm === 'futures' ? 'futures' : 'spot'); setFormMarginMode(String(cfg?.margin_mode || 'cross')); setFormLiquidationBuffer(String(cfg?.liquidation_buffer ?? '0.0')); try { setFormLeverage(Number(cfg?.leverage ?? 1) || 1) } catch { setFormLeverage(1) } const dw = cfg?.dry_run_wallet; if (typeof dw === 'object') { try { setFormDryRunWallet(JSON.stringify(dw)) } catch { setFormDryRunWallet('') } } else if (dw != null) { setFormDryRunWallet(String(dw)) } else { setFormDryRunWallet('') } setFormFiatDisplayCurrency(String(cfg?.fiat_display_currency || 'USD')); setFormAvailableCapital(cfg?.available_capital != null ? String(cfg?.available_capital) : ''); setFormStrategyName(String(cfg?.strategy || '')); const ep = (cfg?.entry_pricing || {}); setEntryPriceSide((ep?.price_side || 'same') as any); setEntryUseOrderBook(!!ep?.use_order_book); setEntryOrderBookTop(Number(ep?.order_book_top || 1)); setEntryPriceLastBalance(Number(ep?.price_last_balance || 0)); const ed = ep?.check_depth_of_market || {}; setEntryDepthEnabled(!!ed?.enabled); setEntryDepthBidsToAskDelta(Number(ed?.bids_to_ask_delta || 0)); const xp = (cfg?.exit_pricing || {}); setExitPriceSide((xp?.price_side || 'same') as any); setExitUseOrderBook(!!xp?.use_order_book); setExitOrderBookTop(Number(xp?.order_book_top || 1)); setExitPriceLastBalance(Number(xp?.price_last_balance || 0)); const xd = xp?.check_depth_of_market || {}; setExitDepthEnabled(!!xd?.enabled); setExitDepthBidsToAskDelta(Number(xd?.bids_to_ask_delta || 0)); }} style={{ padding:'6px 10px', borderRadius:6, border:'1px solid #6b7280', background:'#fff' }}>Reset</button>
                               </div>
                             </div>
                           )}

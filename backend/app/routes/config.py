@@ -296,7 +296,8 @@ def run_backtest(req: dict | None = None, current=Depends(get_current_user)):
     strategy = req.get("strategy") or "SupplyDemandStructureStrategyHTF_TrendV3"
     strategy_path = Path(req.get("strategy_path") or (repo_root / "workspaces" / "user3" / "user" / "strategies"))
     userdir = repo_root / "bt-userdir"
-    db_url = req.get("db_url") or f"sqlite:///{str(userdir / 'backtest.sqlite').replace('\\', '/')}"
+    db_path_raw = str(userdir / 'backtest.sqlite').replace('\\', '/')
+    db_url = req.get("db_url") or f"sqlite:///{db_path_raw}"
     timeframe = req.get("timeframe") or cfg.get("timeframe") or "15m"
     timerange = req.get("timerange")
     export_trades = bool(req.get("export_trades"))
